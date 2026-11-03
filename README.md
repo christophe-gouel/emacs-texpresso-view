@@ -31,6 +31,8 @@ write it, but it works for any LaTeX document that XeLaTeX can typeset.
 - **Your theme's colours.** The page is drawn in the colours of your Emacs theme and follows a theme switch.
 - **Whole documents too.** `C-u M-x texpresso-view` typesets AUCTeX's `TeX-master`, for example a course that
   `\input`s its decks, while you edit one file of it.
+- **Texinfo manuals too.** A `.texi` file, GNU's documentation format, is typeset with plain TeX's format,
+  which `texinfo.tex` is written for, and its `@include` files follow edits as `\input` files do.
 - **Terminal Emacs.** In `emacs -nw` the page is drawn as a Sixel picture, in terminals that support it
   (foot, WezTerm, Konsole, xterm).
 
@@ -86,7 +88,7 @@ SDL2, a TeX distribution).
 
 ## Usage
 
-Open a `.tex` file and run **`M-x texpresso-view`**. The page opens to the right. Run the command again in
+Open a `.tex` (or `.texi`) file and run **`M-x texpresso-view`**. The page opens to the right. Run the command again in
 the same buffer to close it and stop TeXpresso.
 
 With a prefix, **`C-u M-x texpresso-view`** typesets AUCTeX's `TeX-master`, the whole document the file
@@ -164,11 +166,18 @@ what this package needs; the others fix bugs found while using it every day.
 | 0007 | A document that stops TeX is no longer reported as a crash |
 | 0009 | Snapshots spread over the whole document: in a 120-page deck, an edit anywhere shows in 0.06–0.23 s instead of up to 2.6 s |
 | 0013, 0014, 0015 | Cleanup: snapshots end with TeXpresso, finished TeX runs are reaped, a cache loop fixed |
+| 0016 | Texinfo files are typeset with plain XeTeX's format instead of LaTeX's |
 
 ## Notes and limitations
 
-- TeXpresso typesets with XeTeX. A document set in T1-encoded fonts (`fontenc`, `lmodern`) loses the
-  typographic quotes typed as such, unless its preamble loads `fontspec` under XeTeX.
+- texpresso-view is a preview: build the final PDF with your usual engine (pdfLaTeX, LuaLaTeX, latexmk).
+- TeXpresso typesets with XeTeX only: code for LuaTeX alone (`\directlua`, `luacode`) does not run. A
+  document set in T1-encoded fonts (`fontenc`, `lmodern`) loses the typographic quotes typed as such, unless
+  its preamble loads `fontspec` under XeTeX.
+- TeXpresso runs no other program: `\write18` (shell escape) is off, so minted and TikZ externalization cannot
+  make new files; BibTeX or Biber must be run by hand for a key cited for the first time;
+  a Texinfo manual's index stays empty, since `texindex` is not run. Copying text from a Texinfo
+  page loses the ff and fi ligatures of its Computer Modern fonts.
 - Reruns are on: after a pause, if the `.aux` file changed, TeXpresso typesets once more, as a second
   pdflatex run would (references, the table of contents, Beamer's total slide count).
 - A whole document (`C-u`) is slower to start and uses more memory: on a 644-page course, 28 s to reach page

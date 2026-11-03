@@ -52,6 +52,11 @@
 ;; colours, and follows them when the terminal is recoloured from outside
 ;; (a desktop theme switch), once it has the focus again.
 ;;
+;; Texinfo: in a .texi file, the manual is typeset with plain XeTeX's
+;; format, which texinfo.tex is written for (TeXpresso's patch 0016), and
+;; edits to it and to the files it @includes reach the page as LaTeX's do.
+;; Its index stays empty: texindex is not run.
+;;
 ;; It needs a TeXpresso with the commands `render-to', `click-at' and
 ;; `select' (and its rerun fixes): until they are upstream, TeXpresso built
 ;; with the patches in the folder texpresso/ of this package's repository.
@@ -1182,7 +1187,7 @@ The page then follows the scroll or the page turned, not the cursor."
 
 ;;;###autoload
 (defun texpresso-view (&optional whole)
-  "Show TeXpresso's live view of this LaTeX file in the window to the right.
+  "Show TeXpresso's live view of this LaTeX or Texinfo file on the right.
 With a prefix argument WHOLE, TeXpresso typesets AUCTeX's `TeX-master'
 instead, the whole document this file is part of, and the page follows
 this file as it does its own.  Run it again in the same buffer, with the
@@ -1217,6 +1222,32 @@ buffer, or with the other argument, it shows that instead."
 (defvar pdf-view-scroll-sync-mode)
 (declare-function pdf-view-scroll-sync-mode "pdf-view-scroll-sync")
 
+(defconst texpresso-view--texinfo-regexp "\\.\\(?:texi\\|texinfo\\|txi\\)\\'"
+  "A Texinfo file's name: TeXpresso typesets one with plain XeTeX's format.")
+
+(defvar texpresso-view--synced nil
+  "The buffers given `texpresso-sync-mode' by the view, to take it back.")
+
+(defun texpresso-view--texinfo-sync ()
+  "Have TeXpresso follow this buffer's edits if it visits a Texinfo file.
+texpresso.el follows only the buffers whose mode derives from `tex-mode',
+which `texinfo-mode' does not: the others need `texpresso-sync-mode'."
+  (when (and buffer-file-name
+             (string-match-p texpresso-view--texinfo-regexp buffer-file-name)
+             (not (derived-mode-p 'tex-mode))
+             (not texpresso-sync-mode))
+    (texpresso-sync-mode 1)
+    (push (current-buffer) texpresso-view--synced)))
+
+(defun texpresso-view--texinfo-unsync ()
+  "Take `texpresso-sync-mode' back from the buffers the view gave it to."
+  (remove-hook 'find-file-hook #'texpresso-view--texinfo-sync)
+  (dolist (buf texpresso-view--synced)
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (texpresso-sync-mode -1))))
+  (setq texpresso-view--synced nil))
+
 (defun texpresso-view--stop ()
   "Close the page's window and stop TeXpresso."
   (let ((win (texpresso-view--window)))
@@ -1236,6 +1267,7 @@ buffer, or with the other argument, it shows that instead."
   (when (buffer-live-p texpresso-view--source)
     (with-current-buffer texpresso-view--source
       (texpresso-mode -1)))
+  (texpresso-view--texinfo-unsync)
   (when (timerp texpresso-view--scroll-timer)
     (cancel-timer texpresso-view--scroll-timer))
   (when (timerp texpresso-view--errors-timer)
@@ -1305,6 +1337,13 @@ also compile with latexmk."
     (when (bound-and-true-p pdf-view-scroll-sync-mode)
       (pdf-view-scroll-sync-mode -1))
     (texpresso-view--log-reset)
+    ;; a Texinfo manual: its buffers, and its @include files once opened
+    (texpresso-view--texinfo-unsync)
+    (when (string-match-p texpresso-view--texinfo-regexp root)
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (texpresso-view--texinfo-sync)))
+      (add-hook 'find-file-hook #'texpresso-view--texinfo-sync))
     (unless (timerp texpresso-view--sixel-idle-timer)
       (setq texpresso-view--sixel-idle-timer
             (run-with-idle-timer 0.5 t #'texpresso-view--sixel-idle)))
