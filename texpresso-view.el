@@ -1263,7 +1263,8 @@ buffer, or with the other argument, it shows that instead."
   (texpresso-view--cell-stop)
   (when (frame-live-p (car texpresso-view--sixel-drawn))
     (redraw-frame (car texpresso-view--sixel-drawn)))
-  (when (terminal-live-p texpresso-view--sixel-held)
+  ;; nil would be the selected frame's terminal, which a graphical one is not
+  (when (and texpresso-view--sixel-held (terminal-live-p texpresso-view--sixel-held))
     (send-string-to-terminal "\e[?2026l" texpresso-view--sixel-held))
   (setq texpresso-view--sixel nil
         texpresso-view--sixel-drawn nil
