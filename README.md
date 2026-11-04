@@ -31,6 +31,9 @@ write it, but it works for any LaTeX document that XeLaTeX can typeset.
 - **Your theme's colours.** The page is drawn in the colours of your Emacs theme and follows a theme switch.
 - **Whole documents too.** `C-u M-x texpresso-view` typesets AUCTeX's `TeX-master`, for example a course that
   `\input`s its decks, while you edit one file of it.
+- **Edits made on disk too.** When a script or an AI agent writes your files, the page follows: a file open in
+  Emacs once Emacs reverts it (`auto-revert-mode` or `global-auto-revert-mode`), an `\input` file not open as
+  soon as it is written, if it is in the document's folder or below it.
 - **Texinfo manuals too.** A `.texi` file, GNU's documentation format, is typeset with plain TeX's format,
   which `texinfo.tex` is written for, and its `@include` files follow edits as `\input` files do.
 - **Terminal Emacs.** In `emacs -nw` the page is drawn as a Sixel picture, in terminals that support it
@@ -146,6 +149,11 @@ window (`render-to`), and shows that PNG as an image. A click is sent back as pi
 points (`select`). Each new image comes with the source line its page starts at, which is how turning a page
 moves the source. Scrolling the source sends a SyncTeX search the other way. The PNG lives in
 `temporary-file-directory` and is deleted when the view closes or Emacs quits.
+
+TeXpresso reads a file from disk once. A file open in Emacs reaches it from the buffer, as you type; a file
+written by another program reaches it when Emacs reverts the buffer, which sends the whole buffer again. For
+the files that are not open, the view watches the document's folder and its subfolders (at most 100), and when
+a file there changes it asks TeXpresso to read the changed files again (`rescan`).
 
 ## The TeXpresso patches
 

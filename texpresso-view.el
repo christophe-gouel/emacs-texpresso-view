@@ -52,6 +52,11 @@
 ;; colours, and follows them when the terminal is recoloured from outside
 ;; (a desktop theme switch), once it has the focus again.
 ;;
+;; Edits made on disk by another program (a script, an AI agent) show too:
+;; to a file open in Emacs once it is reverted (`auto-revert-mode',
+;; `global-auto-revert-mode'), to one not open as soon as it is written, if
+;; it is in the document's folder or below.
+;;
 ;; Texinfo: in a .texi file, the manual is typeset with plain XeTeX's
 ;; format, which texinfo.tex is written for (TeXpresso's patch 0016), and
 ;; edits to it and to the files it @includes reach the page as LaTeX's do.
@@ -65,6 +70,7 @@
 
 (require 'texpresso)
 (require 'subr-x)
+(require 'filenotify)
 
 (defconst texpresso-view-buffer-name "*TeXpresso window*"
   "Name of the buffer showing the page.
@@ -1248,6 +1254,92 @@ which `texinfo-mode' does not: the others need `texpresso-sync-mode'."
         (texpresso-sync-mode -1))))
   (setq texpresso-view--synced nil))
 
+;;; Edits made on disk, by another program (a script, an AI agent), reach
+;;; the page too.  A file open in Emacs is reverted, which runs the change
+;;; hooks with `buffer-file-name' nil: texpresso.el would send TeXpresso the
+;;; text with no file, which it drops, and the page would wait for the next
+;;; edit typed there.  So the hooks are skipped while a revert runs, and the
+;;; buffer is sent whole once it is done.  A file not open in Emacs TeXpresso
+;;; reads again only when told to: the document's folders are watched, and a
+;;; change there tells it (`rescan'); it rereads the files it read that
+;;; changed, but for those open from Emacs, whose buffer it keeps.
+
+(defconst texpresso-view-watch-limit 100
+  "The most folders watched: the root's folder, then its subfolders.")
+
+(defvar texpresso-view--watches nil
+  "The file notification watches on the document's folders.")
+
+(defvar texpresso-view--rescan-timer nil
+  "The timer that tells TeXpresso to read the disk again.")
+
+(defun texpresso-view--reverting-p (&rest _)
+  "Non-nil while Emacs reloads the current buffer from its file."
+  (symbol-value (if (boundp 'revert-buffer-in-progress)
+                    'revert-buffer-in-progress
+                  'revert-buffer-in-progress-p)))
+
+(advice-add 'texpresso--before-change :before-until #'texpresso-view--reverting-p)
+(advice-add 'texpresso--after-change :before-until #'texpresso-view--reverting-p)
+
+(defun texpresso-view--reverted ()
+  "Send TeXpresso the whole buffer, reloaded from its file.
+As texpresso.el does when a buffer is first edited: its state names the
+file, the process and the process's marker, so the next edit is sent as
+a change."
+  (when (and buffer-file-name (texpresso--enabled-p))
+    (setq texpresso--state (list buffer-file-name texpresso--process
+                                 (process-get texpresso--process 'marker)))
+    (texpresso--send 'open buffer-file-name
+                     (buffer-substring-no-properties (point-min) (point-max)))))
+
+(add-hook 'after-revert-hook #'texpresso-view--reverted)
+
+(defun texpresso-view--folders (dir)
+  "DIR and its subfolders but hidden ones, at most `texpresso-view-watch-limit'."
+  (let ((todo (list (file-name-as-directory dir))) folders)
+    (while (and todo (< (length folders) texpresso-view-watch-limit))
+      (let ((d (pop todo)))
+        (push d folders)
+        (dolist (sub (ignore-errors (directory-files d t "\\`[^.]" t)))
+          (when (and (file-directory-p sub) (not (file-symlink-p sub)))
+            (setq todo (append todo (list (file-name-as-directory sub))))))))
+    (nreverse folders)))
+
+(defun texpresso-view--disk-changed (event)
+  "Tell TeXpresso to read the disk again, after the file change EVENT.
+Once for a burst of changes, 0.3 s after the last; Emacs's own
+lock, auto-save and backup files are left out."
+  (pcase-let ((`(,_ ,action ,file . ,_) event))
+    (when (and (memq action '(created changed renamed))
+               (stringp file)
+               (not (string-match-p "\\`\\.?#\\|~\\'" (file-name-nondirectory file))))
+      (when (timerp texpresso-view--rescan-timer)
+        (cancel-timer texpresso-view--rescan-timer))
+      (setq texpresso-view--rescan-timer
+            (run-with-timer 0.3 nil
+                            (lambda ()
+                              (setq texpresso-view--rescan-timer nil)
+                              (when (process-live-p texpresso--process)
+                                (texpresso--send 'rescan))))))))
+
+(defun texpresso-view--watch (root)
+  "Watch the folder of ROOT and its subfolders for files changed on disk."
+  (texpresso-view--unwatch)
+  (dolist (dir (texpresso-view--folders (file-name-directory (expand-file-name root))))
+    (let ((watch (ignore-errors
+                   (file-notify-add-watch dir '(change) #'texpresso-view--disk-changed))))
+      (when watch
+        (push watch texpresso-view--watches)))))
+
+(defun texpresso-view--unwatch ()
+  "Stop watching the document's folders."
+  (mapc #'file-notify-rm-watch texpresso-view--watches)
+  (setq texpresso-view--watches nil)
+  (when (timerp texpresso-view--rescan-timer)
+    (cancel-timer texpresso-view--rescan-timer))
+  (setq texpresso-view--rescan-timer nil))
+
 (defun texpresso-view--stop ()
   "Close the page's window and stop TeXpresso."
   (let ((win (texpresso-view--window)))
@@ -1268,6 +1360,7 @@ which `texinfo-mode' does not: the others need `texpresso-sync-mode'."
     (with-current-buffer texpresso-view--source
       (texpresso-mode -1)))
   (texpresso-view--texinfo-unsync)
+  (texpresso-view--unwatch)
   (when (timerp texpresso-view--scroll-timer)
     (cancel-timer texpresso-view--scroll-timer))
   (when (timerp texpresso-view--errors-timer)
@@ -1349,7 +1442,8 @@ also compile with latexmk."
             (run-with-idle-timer 0.5 t #'texpresso-view--sixel-idle)))
     (texpresso root)
     (when (process-live-p texpresso--process)
-      (texpresso--send 'rerun t))
+      (texpresso--send 'rerun t)
+      (texpresso-view--watch root))
     (let ((buf (get-buffer-create texpresso-view-buffer-name))
           (win (or (texpresso-view--window)
                    (split-window (selected-window) nil 'right))))
