@@ -31,6 +31,9 @@ write it, but it works for any LaTeX document that XeLaTeX can typeset.
 - **Your theme's colours.** The page is drawn in the colours of your Emacs theme and follows a theme switch.
 - **Whole documents too.** `C-u M-x texpresso-view` typesets AUCTeX's `TeX-master`, for example a course that
   `\input`s its decks, while you edit one file of it.
+- **Slides with the mouse.** Put pictures and text boxes on a Beamer slide, then drag and resize them as in
+  Google Slides; the LaTeX source follows as you drag. A strip of slides on the left reorders, copies,
+  deletes and adds frames.
 - **Edits made on disk too.** When a script or an AI agent writes your files, the page follows: a file open in
   Emacs once Emacs reverts it (`auto-revert-mode` or `global-auto-revert-mode`), an `\input` file not open as
   soon as it is written, if it is in the document's folder or below it.
@@ -109,6 +112,67 @@ In the page's window:
 
 A click also selects the page's window, so its keys work at once.
 
+## Slides with the mouse
+
+A Beamer deck can be edited as in Google Slides, and the LaTeX source follows.
+
+**On the page.** Put a picture or a text box on the slide, then drag it where you want it, or pull a corner to
+resize it. While you drag, the source changes and TeXpresso redraws the slide. A whole drag is one undo.
+
+| Key in the page's window     | Action                                                                   |
+|------------------------------|--------------------------------------------------------------------------|
+| `i`                          | put a picture (PNG, JPEG, PDF) on the slide, where you last clicked      |
+| `C-y`                        | paste the picture on the clipboard (a screenshot), saved in `figures/`   |
+| drop a file                  | a picture dragged from a file manager goes where it's dropped            |
+| `t`                          | a text box; the cursor goes to its text in the source, to type over      |
+| click on an object           | select it: a blue outline with four handles                              |
+| drag an object / a corner    | move it / resize it, its aspect kept                                     |
+| arrows                       | move the object selected by half a unit (`C-u` for 2 units); without one, turn pages |
+| `+` / `-`                    | make it a tenth larger / smaller                                         |
+| `d`, `DEL`, `RET`            | copy it, delete it (onto the kill ring), show it in the source           |
+| `]`, `[`                     | bring it forward, send it back                                           |
+| `Esc`                        | unselect                                                                 |
+| `s`                          | open or close the slide strip                                            |
+
+What goes on a slide is plain TikZ. Each object is a node in the frame's `tvlayer`, at `(x,y)` from the
+slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever its aspect ratio:
+
+```latex
+\begin{frame}{Results}
+  Text in the flow, as usual.
+  \begin{tvlayer}
+    \node[tv] at (10,20) {\includegraphics[width=30\tvu]{figures/plot.png}};
+    \node[tv,text width=40\tvu,align=left] at (55,20) {A text box};
+  \end{tvlayer}
+\end{frame}
+```
+
+The first object placed adds the definitions before `\begin{document}`: a short block between
+`% texpresso-view slides: begin` and `end` comments, needing only TikZ. So the deck still builds with
+`pdflatex`, `xelatex` or `lualatex`, with or without this package. You can write and edit such nodes by
+hand too: the mouse finds them all the same, because TeX writes each object's place and size to its log.
+
+**The slide strip** (`s` in the page's window, or `M-x texpresso-view-slides`) opens on the left. It shows
+every frame of the deck, also those in `\input` files, each with a small picture of its page and its title.
+The slide on display is highlighted.
+
+| Key in the strip      | Action                                                                  |
+|-----------------------|-------------------------------------------------------------------------|
+| click, `RET`          | show that slide; the source window goes to its frame                    |
+| `n` / `p`, `↓` / `↑`  | next / previous slide                                                   |
+| `M-↑` / `M-↓`, drag   | move the slide up / down, or to where it's dropped                      |
+| `d`                   | copy the slide after itself                                             |
+| `DEL`                 | delete the slide (onto the kill ring: `C-y` in the source brings it back) |
+| `+`, `a`              | add a slide after this one, from a layout (`texpresso-view-layouts`)    |
+| `g`, `q`              | redraw, close                                                           |
+
+A slide moves with the comment and setting lines right above its `\begin{frame}`, such as a
+`\setlength` for that frame. Slides made by a macro (`\AtBeginSection`, a command holding a frame) are not
+in the strip, and nothing can be placed on them: there is no `\begin{frame}` of theirs in the deck to edit. While the strip is open, TeXpresso typesets to the end of the deck so that
+every slide has its picture.
+
+Everything is edited in the source buffers, unsaved, so save them as usual.
+
 ## Configuration
 
 | Variable                  | Package         | Default | What it does                                          |
@@ -116,6 +180,7 @@ A click also selects the page's window, so its keys work at once.
 | `texpresso-binary`        | `texpresso.el`  | `nil`   | path to the patched `texpresso`                       |
 | `texpresso-follow-cursor` | `texpresso.el`  | `nil`   | `t`: the page follows the cursor                      |
 | `texpresso-view-cell-size`| texpresso-view  | `nil`   | terminal cell size `(W . H)` in pixels, if the terminal doesn't report it |
+| `texpresso-view-layouts`  | texpresso-view  | six     | the layouts of a new slide in the strip: `(NAME . FRAME-SOURCE)` |
 
 ## Terminal Emacs
 
@@ -175,6 +240,7 @@ what this package needs; the others fix bugs found while using it every day.
 | 0009 | Snapshots spread over the whole document: in a 120-page deck, an edit anywhere shows in 0.06–0.23 s instead of up to 2.6 s |
 | 0013, 0014, 0015 | Cleanup: snapshots end with TeXpresso, finished TeX runs are reaped, a cache loop fixed |
 | 0016 | Texinfo files are typeset with plain XeTeX's format instead of LaTeX's |
+| 0017 | A `thumbnails` command: every page as a small PNG for the slide strip, TeX typesetting to the end meanwhile |
 
 ## Notes and limitations
 

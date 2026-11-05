@@ -1,7 +1,7 @@
 From a90ac7cdd42d03ba5f0e286a1e7d9d0f13b97350 Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 07:56:25 +0100
-Subject: [PATCH 15/16] dvi_resmanager_invalidate keeps the cell after the one
+Subject: [PATCH 15/17] dvi_resmanager_invalidate keeps the cell after the one
  it drops
 
 Each loop dropped a cell, set *cell to the next one, and then stepped
