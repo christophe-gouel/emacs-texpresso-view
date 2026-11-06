@@ -116,23 +116,39 @@ A click also selects the page's window, so its keys work at once.
 
 A Beamer deck can be edited as in Google Slides, and the LaTeX source follows.
 
-**On the page.** Put a picture or a text box on the slide, then drag it where you want it, or pull one of its
-eight handles to resize it (a picture's corners keep its shape, its sides stretch it). While you drag, the source
-changes and TeXpresso redraws the slide. A whole drag is one undo.
+**On the page.** Put a picture, a text box, a shape or a line on the slide, then drag it where you want it, pull
+one of its eight handles to resize it (a picture's corners keep its shape, its sides stretch it), or the round
+handle over it to turn it (it stops at multiples of 15°). A line has a handle at each end. While you drag, the
+source changes and TeXpresso redraws the slide. A whole drag is one undo. A double click on a text box or a shape
+opens a small box under it: type its text there and the slide shows it as you type (it is LaTeX; Return ends a
+line, Esc ends the typing).
 
 Everything is done with the mouse:
 
 - **The toolbar** over the page, on a Beamer deck: undo and redo; Text (a text box); Picture ▾ (from your
-  computer, in your system's file window; from a panel of recent pictures; or pasted); duplicate, delete, bring
+  computer, in your system's file window; from a panel of recent pictures; or pasted); Shape ▾ (rectangle,
+  rounded rectangle, ellipse, diamond, triangle); Line ▾ (line, arrow, double arrow); duplicate, delete, bring
   to front and send to back for the object selected; Slides (the strip) and ▾ (a new slide from a layout, a copy
   of this one, or deleting it).
+- **The format bar** under it, for the object selected: Fill, Border and Text colours (a click opens a palette in
+  the bar's place), border Weight and Dash, the text's Size, bold, italic and alignment, Edit text, a quarter
+  turn left or right, Opacity; for a line its Colour, Weight, Dash and Arrows. Colours are written as xcolor
+  expressions (`red!40`, `blue!60!black`).
 - **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
-  size, edit in the source. On an empty spot: paste, a text box, a picture there, and the slide's commands.
+  size, rotate, edit its text, edit in the source. On an empty spot: paste, a text box, a picture, a shape or
+  a line there, and the slide's commands.
+- **Arranging**: shift and a click adds an object to those selected, and a frame dragged from an empty spot
+  selects what it touches; several selected move, change look, copy and delete together. Arrange ▾, in the
+  format bar or the right-click menu, aligns them (left, centre, right, top, middle, bottom; one alone with the
+  slide), centres them on the slide, spreads three or more evenly, and groups them: a click on one of a group
+  selects them all. While you drag an object, pink guides show where it lines up with the slide's edges and
+  middle or with the other objects, and it snaps there.
 - **The Slides menu** in the menu bar has all of them.
 - **The picture panel** (Picture ▾, Recent pictures) shows small previews of the pictures in the deck's folder,
   its `figures/`, `~/Pictures`, `~/Pictures/Screenshots`, `~/Downloads` and `~/Desktop`
   (`texpresso-view-picture-folders`), the newest first; a click puts one on the slide.
-- A press on an empty spot marks it with a small cross: the next object goes there.
+- A press on an empty spot marks it with a small cross: the next object goes there. On a slide, Meta and a drag
+  copies the page's text (a plain drag frames objects there).
 
 The keys, for those who want them:
 
@@ -141,8 +157,8 @@ The keys, for those who want them:
 | `i`                          | put a picture (PNG, JPEG, PDF) on the slide, where you last clicked      |
 | `C-y`                        | paste: the picture on the clipboard (a screenshot, saved in `figures/`), or the object copied |
 | drop a file                  | a picture dragged from a file manager goes where it's dropped            |
-| `t`                          | a text box; the cursor goes to its text in the source, to type over      |
-| click on an object           | select it: a blue outline with four handles                              |
+| `t`                          | a text box, its text typed in a small box under it                       |
+| click on an object           | select it: a blue outline with its handles                               |
 | drag an object / a corner    | move it / resize it, its aspect kept                                     |
 | arrows                       | move the object selected by half a unit (`C-u` for 2 units); without one, turn pages |
 | `+` / `-`                    | make it a tenth larger / smaller                                         |
@@ -152,7 +168,8 @@ The keys, for those who want them:
 | `s`                          | open or close the slide strip                                            |
 
 What goes on a slide is plain TikZ. Each object is a node in the frame's `tvlayer`, centred at `(x,y)` from the
-slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever its aspect ratio:
+slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever its aspect ratio; `rotate` turns
+it about its centre. A line is a node too, as long as its width, drawn from end to end:
 
 ```latex
 \begin{frame}{Results}
@@ -160,6 +177,9 @@ slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever i
   \begin{tvlayer}
     \node[tv] at (25,35) {\includegraphics[width=30\tvu]{figures/plot.png}};
     \node[tv,text width=40\tvu,align=left] at (75,25) {A text box};
+    \node[tv,tv shape=ellipse,minimum width=24\tvu,minimum height=14\tvu,text width=16\tvu,
+          align=center,fill=red!40,rotate=15] at (70,45) {Key point};
+    \node[tv,tv line={-{Stealth},line width=1.5pt},minimum width=20\tvu,rotate=-30] at (45,40) {};
   \end{tvlayer}
 \end{frame}
 ```

@@ -58,13 +58,19 @@
 ;; the slide strip, a new slide), a right-click menu on the slide and a
 ;; Slides menu in the menu bar.  A click selects an object, a drag moves
 ;; it, its eight handles resize it, and the source follows as it moves (one
-;; undo).  Keys do the same: i a picture where you last clicked (C-y
+;; undo).  Keys do some of it: i a picture where you last clicked (C-y
 ;; pastes, or drop a file), t a text box, the arrows nudge, + and -
 ;; resize, d copies, DEL deletes, RET shows it in the source, ] and [
 ;; bring it forward and back.  An object is a TikZ node in the frame's
 ;; tvlayer, centred at a place given from the slide's top left corner in
 ;; hundredths of its width: plain LaTeX, defined once before
-;; \begin{document}.  s opens the slide strip on the left
+;; \begin{document}.  Shapes and lines come from the toolbar too; a round
+;; handle turns an object; the format bar under the toolbar sets fill,
+;; border, weight, dash, text colour, size, bold, italic, alignment and
+;; opacity; a double click types an object's text on the slide.  Shift and
+;; a click, or a frame dragged on an empty spot, select several, which move
+;; and change together; Arrange aligns, centres, spreads and groups them,
+;; and a dragged object snaps to guides.  s opens the slide strip on the left
 ;; (`texpresso-view-slides'): every frame with a small picture of its page
 ;; and its title, to show, move (M-up, M-down or a drag), copy, delete and
 ;; add from a layout (`texpresso-view-layouts').
@@ -124,6 +130,29 @@ in another window instead of replacing it.")
 (defvar texpresso-view--anchor nil
   "Where on the slide the last click was, in slide units: (X . Y), or nil.
 New objects go there.")
+
+(defvar texpresso-view--palette nil
+  "The colour being picked in the format bar, or nil.
+One of `fill', `border', `text', `line'.")
+
+(defvar texpresso-view--format-cache nil
+  "The format bar last made, and what it was made from: (KEY . STRING).")
+
+(defvar texpresso-view--editor nil
+  "The text being typed on the slide: (FRAME BUFFER BEG END), or nil.
+FRAME is its child frame, or nil; BEG and END mark the text in the source.")
+
+(defvar texpresso-view--also nil
+  "The other objects selected: (PRIMARY . NUMBERS), PRIMARY the one selected with.")
+
+(defvar texpresso-view--outlines nil
+  "The outlines drawn while several objects are dragged: boxes.")
+
+(defvar texpresso-view--band nil
+  "The frame being dragged around objects to select them: (X Y W H), or nil.")
+
+(defvar texpresso-view--guides nil
+  "The guides a dragged object snaps to: ((x . X) (y . Y)…), drawn as lines.")
 
 (defvar texpresso-view--waiting nil
   "When the last change of a drag went to TeXpresso, until its page comes.")
@@ -985,14 +1014,18 @@ pages TeX wrote, when it said."
               (texpresso-view--header-update)))))))))
 
 (defun texpresso-view--header-update ()
-  "Show over the page that TeX stopped; else, on a Beamer deck, the toolbar."
+  "Put the toolbar and the format bar over the page, on a Beamer deck.
+The toolbar is the page window's tab line, the format bar its header
+line; when TeX stopped, the header line says so instead."
   (let ((buf (get-buffer texpresso-view-buffer-name)))
     (when buf
       (with-current-buffer buf
-        (let ((line (cond (texpresso-view--stop-line)
-                          ((and (texpresso-view--deck-p)
-                                (not (texpresso-view--tty-p)))
-                           '(:eval (texpresso-view--toolbar))))))
+        (let* ((deck (and (texpresso-view--deck-p) (not (texpresso-view--tty-p))))
+               (tabs (and deck '(:eval (texpresso-view--toolbar))))
+               (line (cond (texpresso-view--stop-line)
+                           (deck '(:eval (texpresso-view--format-bar))))))
+          (unless (equal tab-line-format tabs)
+            (setq tab-line-format tabs))
           (unless (equal header-line-format line)
             (setq header-line-format line)))))))
 
@@ -1146,7 +1179,8 @@ A touchpad sends many wheel events for one stroke."
     texpresso-view-previous texpresso-view-wheel ignore
     texpresso-view-mouse-down texpresso-view-down texpresso-view-right
     texpresso-view-up texpresso-view-left texpresso-view-backspace
-    texpresso-view-toolbar-click texpresso-view-context-menu texpresso-view-paste)
+    texpresso-view-toolbar-click texpresso-view-context-menu texpresso-view-paste
+    texpresso-view-mouse-down-add)
   "Commands of the page's window: after them the page does not follow the cursor.
 The wheel on the page leaves the source window selected; a click selects
 the page's window.")
@@ -1309,6 +1343,7 @@ The page then follows the scroll or the page turned, not the cursor."
 \\tikzset{tv/.code={\\global\\advance\\tv@n by 1
     \\tikzset{anchor=center,inner sep=0pt,outer sep=0pt,name=tv@\\the\\tv@n}},
   tv line/.style={append after command={(\\tikzlastnode.west) edge[#1] (\\tikzlastnode.east)}},
+  tv group/.style={},
   tv shape/.is choice,
   tv shape/rectangle/.style={shape=rectangle},
   tv shape/rounded/.style={shape=rectangle,rounded corners=1.5\\tvu},
@@ -1369,63 +1404,144 @@ K is the object's number in its frame's tvlayer, from 1."
           (sort objects (lambda (a b) (< (car a) (car b)))))))))
 
 (defun texpresso-view--boxes ()
-  "The objects on the page on display: ((K X Y W H) …), K from 1.
-Their place and size as the source says, where it does (TeX's report
-lags behind an edit just made), else as TeX reported them."
+  "The objects on the page on display: ((K X Y W H ANGLE KIND) …), K from 1.
+Their box before rotation as the source says, where it does (TeX's
+report lags behind an edit just made), else as TeX reported it; ANGLE
+in degrees counter-clockwise, KIND as `texpresso-view--kind' says."
   (let ((statements (texpresso-view--frame-statements)))
     (mapcar (lambda (object)
               (let ((statement (nth (1- (car object)) statements)))
                 (cons (car object)
-                      (or (and statement (texpresso-view--source-box statement (cdr object)))
-                          (cdr object)))))
+                      (if statement
+                          (append (seq-take (or (texpresso-view--source-box statement (cdr object))
+                                                (cdr object))
+                                            4)
+                                  (list (texpresso-view--angle statement)
+                                        (texpresso-view--kind statement)))
+                        (append (cdr object) (list 0 nil))))))
             (texpresso-view--objects))))
 
 (defun texpresso-view--box ()
-  "The outline to draw: the one dragged, or the object selected's, or nil."
+  "The outline to draw: the one dragged, or the object selected's, or nil.
+It is (X Y W H ANGLE KIND), as in `texpresso-view--boxes'."
   (or texpresso-view--outline
       (and texpresso-view--selected
            (cdr (assq texpresso-view--selected (texpresso-view--boxes))))))
 
+(defun texpresso-view--turned (dx dy angle)
+  "DX DY turned by ANGLE degrees counter-clockwise, on a slide whose y goes down."
+  (let ((r (degrees-to-radians angle)))
+    (cons (+ (* dx (cos r)) (* dy (sin r)))
+          (- (* dy (cos r)) (* dx (sin r))))))
+
+(defun texpresso-view--local (box x y)
+  "The point X Y of the slide in BOX's own frame: from its centre, unturned."
+  (pcase-let ((`(,bx ,by ,w ,h ,a) box))
+    (texpresso-view--turned (- x (+ bx (/ w 2.0))) (- y (+ by (/ h 2.0))) (- (or a 0)))))
+
+(defun texpresso-view--global (box lx ly)
+  "The point LX LY of BOX's own frame, on the slide: (X . Y)."
+  (pcase-let* ((`(,bx ,by ,w ,h ,a) box)
+               (p (texpresso-view--turned lx ly (or a 0))))
+    (cons (+ bx (/ w 2.0) (car p)) (+ by (/ h 2.0) (cdr p)))))
+
+(defconst texpresso-view--rotate-reach 4
+  "How far over its top the rotation handle of an object is, in slide units.")
+
 (defun texpresso-view--handles (box)
-  "The eight handles of BOX, (X Y W H): ((HANDLE X Y) …), corners first."
-  (pcase-let* ((`(,x ,y ,w ,h) box)
-               (r (+ x w)) (b (+ y h)) (cx (+ x (/ w 2.0))) (cy (+ y (/ h 2.0))))
-    (list (list 'nw x y) (list 'ne r y) (list 'sw x b) (list 'se r b)
-          (list 'n cx y) (list 'e r cy) (list 's cx b) (list 'w x cy))))
+  "The handles of BOX, (X Y W H ANGLE KIND): ((HANDLE X Y) …), on the slide.
+A line has its two ends, `west' and `east'; anything else eight handles,
+corners first, and `rotate' over its top."
+  (pcase-let* ((`(,_ ,_ ,w ,h ,_ ,kind) box)
+               (a (/ w 2.0)) (b (/ h 2.0)))
+    (mapcar (lambda (handle)
+              (let ((p (texpresso-view--global box (nth 1 handle) (nth 2 handle))))
+                (list (car handle) (car p) (cdr p))))
+            (if (eq kind 'line)
+                (list (list 'west (- a) 0) (list 'east a 0))
+              (list (list 'nw (- a) (- b)) (list 'ne a (- b)) (list 'sw (- a) b) (list 'se a b)
+                    (list 'n 0 (- b)) (list 'e a 0) (list 's 0 b) (list 'w (- a) 0)
+                    (list 'rotate 0 (- (+ b texpresso-view--rotate-reach))))))))
 
 (defun texpresso-view--page-image (data width height)
   "The page's image from its PNG DATA, WIDTH x HEIGHT, the selection outlined.
-With an outline, an SVG that holds the PNG and draws the outline and its
-eight handles over it; on a slide with nothing selected, a small cross
-where the next object goes."
-  (let ((box (texpresso-view--box))
-        (anchor (and (not texpresso-view--selected) (texpresso-view--deck-p)
-                     texpresso-view--anchor)))
-    (if (not (and (or box anchor) (image-type-available-p 'svg)))
+With an outline, an SVG that holds the PNG and draws the outline, turned
+as its object is, and its handles over it; on a slide with nothing
+selected, a small cross where the next object goes."
+  (let* ((several (or texpresso-view--outlines
+                      (let ((ks (texpresso-view--selection)))
+                        (and (cdr ks)
+                             (let ((boxes (texpresso-view--boxes)))
+                               (delq nil (mapcar (lambda (k) (cdr (assq k boxes))) ks)))))))
+         (box (and (not several) (texpresso-view--box)))
+         (anchor (and (not texpresso-view--selected) (texpresso-view--deck-p)
+                      texpresso-view--anchor)))
+    (if (not (and (or box anchor several texpresso-view--band) (image-type-available-p 'svg)))
         (create-image data 'png t :scale 1.0 :width width :height height)
       (let ((svg (svg-create width height))
             (u (/ width 100.0))
             (color texpresso-view--outline-color))
         (svg-embed svg data "image/png" t :x 0 :y 0 :width width :height height)
-        (if box
-            (pcase-let ((`(,x ,y ,w ,h) box))
-              (svg-rectangle svg (* x u) (* y u) (* w u) (* h u)
-                             :fill "none" :stroke color :stroke-width 2)
-              (dolist (handle (texpresso-view--handles box))
+        (dolist (b several)
+          (when b
+            (pcase-let ((`(,_ ,_ ,w ,h) b))
+              (svg-polygon svg (mapcar (lambda (c)
+                                         (let ((p (texpresso-view--global b (car c) (cdr c))))
+                                           (cons (* (car p) u) (* (cdr p) u))))
+                                       (list (cons (- (/ w 2.0)) (- (/ h 2.0)))
+                                             (cons (/ w 2.0) (- (/ h 2.0)))
+                                             (cons (/ w 2.0) (/ h 2.0))
+                                             (cons (- (/ w 2.0)) (/ h 2.0))))
+                           :fill "none" :stroke color :stroke-width 2))))
+        (when texpresso-view--band
+          (pcase-let ((`(,x ,y ,w ,h) texpresso-view--band))
+            (svg-rectangle svg (* x u) (* y u) (* w u) (* h u)
+                           :fill color :fill-opacity 0.1 :stroke color :stroke-width 1
+                           :stroke-dasharray "4 3")))
+        (dolist (g texpresso-view--guides)
+          (if (eq (car g) 'x)
+              (svg-line svg (* (cdr g) u) 0 (* (cdr g) u) height :stroke "#e91e63" :stroke-width 1)
+            (svg-line svg 0 (* (cdr g) u) width (* (cdr g) u) :stroke "#e91e63" :stroke-width 1)))
+        (cond
+         (several)
+         (box
+          (pcase-let* ((`(,_ ,_ ,w ,h ,_ ,kind) box)
+                       (handles (texpresso-view--handles box)))
+            (unless (eq kind 'line)
+              (svg-polygon svg (mapcar (lambda (c)
+                                         (let ((p (texpresso-view--global box (car c) (cdr c))))
+                                           (cons (* (car p) u) (* (cdr p) u))))
+                                       (list (cons (- (/ w 2.0)) (- (/ h 2.0)))
+                                             (cons (/ w 2.0) (- (/ h 2.0)))
+                                             (cons (/ w 2.0) (/ h 2.0))
+                                             (cons (- (/ w 2.0)) (/ h 2.0))))
+                           :fill "none" :stroke color :stroke-width 2)
+              (let ((top (assq 'n handles)) (knob (assq 'rotate handles)))
+                (svg-line svg (* (nth 1 top) u) (* (nth 2 top) u) (* (nth 1 knob) u) (* (nth 2 knob) u)
+                          :stroke color :stroke-width 1.5)))
+            (dolist (handle handles)
+              (if (memq (car handle) '(rotate west east))
+                  (svg-circle svg (* (nth 1 handle) u) (* (nth 2 handle) u) 5
+                              :fill (if (eq (car handle) 'rotate) color "white")
+                              :stroke color :stroke-width 1.5)
                 (svg-rectangle svg (- (* (nth 1 handle) u) 4) (- (* (nth 2 handle) u) 4) 8 8
-                               :fill "white" :stroke color :stroke-width 1.5)))
+                               :fill "white" :stroke color :stroke-width 1.5)))))
+         (anchor
           (let ((ax (* (car anchor) u)) (ay (* (cdr anchor) u)))
             (svg-line svg (- ax 6) ay (+ ax 6) ay :stroke color :stroke-width 1.5)
-            (svg-line svg ax (- ay 6) ax (+ ay 6) :stroke color :stroke-width 1.5)))
+            (svg-line svg ax (- ay 6) ax (+ ay 6) :stroke color :stroke-width 1.5))))
         (svg-image svg :scale 1.0)))))
 
 (defun texpresso-view--hit (x y)
   "The object at X Y on the slide, the topmost: (K HANDLE), or nil.
-HANDLE is one of `nw', `n', `ne', `e', `se', `s', `sw', `w' for a handle
-of the object selected, nil inside an object."
+HANDLE is one of `nw', `n', `ne', `e', `se', `s', `sw', `w', `rotate',
+or a line's `west' or `east', for a handle of the object selected; nil
+inside an object."
   (let* ((r (min 2.0 (max 0.8 (* 6 (texpresso-view--units-per-pixel)))))
          (boxes (texpresso-view--boxes))
-         (selected (cdr (assq texpresso-view--selected boxes)))
+         ;; several selected show no handles
+         (selected (and (not (cdr (texpresso-view--selection)))
+                        (cdr (assq texpresso-view--selected boxes))))
          (handle (and selected
                       (seq-find (lambda (c) (and (<= (abs (- x (nth 1 c))) r)
                                                  (<= (abs (- y (nth 2 c))) r)))
@@ -1434,11 +1550,12 @@ of the object selected, nil inside an object."
         (list texpresso-view--selected (car handle))
       (let (hit)
         (dolist (object boxes)
-          (pcase-let ((`(,k ,ox ,oy ,w ,h) object))
+          (pcase-let* ((`(,k ,_ ,_ ,w ,h) object)
+                       (p (texpresso-view--local (cdr object) x y)))
             ;; a line, or a box a line high, can still be caught
-            (let ((dx (max 0 (- r (/ w 2)))) (dy (max 0 (- r (/ h 2)))))
-              (when (and (<= (- ox dx) x (+ ox w dx)) (<= (- oy dy) y (+ oy h dy)))
-                (setq hit (list k nil))))))
+            (when (and (<= (abs (car p)) (max (/ w 2.0) r))
+                       (<= (abs (cdr p)) (max (/ h 2.0) r)))
+              (setq hit (list k nil)))))
         hit))))
 
 (defvar texpresso-view--frame-start nil
@@ -1671,7 +1788,11 @@ text box dragged by its top or bottom a minimum height."
                                (texpresso-view--number (+ y (/ h 2.0))))))
               (unless (equal (match-string 0) new)
                 (replace-match new t t)))))))
-    (when handle
+    (let ((angle (nth 4 box)))
+      (when (and angle (/= angle (texpresso-view--angle statement)))
+        (texpresso-view--put-option statement "rotate"
+                                    (and (/= angle 0) (texpresso-view--number angle)))))
+    (when (and handle (not (eq handle 'rotate)))
       (pcase (texpresso-view--kind statement)
         ('picture
          (texpresso-view--set-key statement 'width w)
@@ -1684,7 +1805,19 @@ text box dragged by its top or bottom a minimum height."
         (_
          (texpresso-view--set-key statement 'min-width w)
          (texpresso-view--set-key statement 'min-height h)
-         (texpresso-view--set-key statement 'text-width (- w 2)))))))
+         (texpresso-view--set-key statement 'text-width
+                                  (texpresso-view--shape-text-width
+                                   (texpresso-view--option statement "tv shape") w)))))))
+
+(defun texpresso-view--shape-text-width (shape width)
+  "The text width that fits in a SHAPE WIDTH wide, as TikZ sizes it.
+TikZ makes a shape large enough to hold its text's box: an ellipse
+encloses it, so its box is the ellipse's width over the square root of
+two; a diamond's or a triangle's, half of it."
+  (max 1 (pcase shape
+           ("ellipse" (- (/ width (sqrt 2)) 1))
+           ((or "diamond" "triangle") (- (/ width 2.0) 1))
+           (_ (- width 2)))))
 
 (defun texpresso-view--resized (box handle mx my &optional aspect)
   "BOX, (X Y W H), with its HANDLE dragged to MX MY, the opposite side still.
@@ -1703,6 +1836,43 @@ for wins."
         (setq nw (* w s) nh (* h s))))
     (setq nw (max 1 nw) nh (max 1 nh))
     (list (if left (- (+ x w) nw) x) (if top (- (+ y h) nh) y) nw nh)))
+
+(defun texpresso-view--dragged (box handle mx my x0 y0 aspect)
+  "BOX, (X Y W H ANGLE KIND), after a drag by HANDLE from X0 Y0 to MX MY.
+No HANDLE moves it; `rotate' turns it about its centre; a line's `west'
+or `east' moves that end, the other one still; the others resize it in
+its own frame, the opposite side still, a picture's corners keeping its
+aspect with ASPECT.  An angle within 4 degrees of a multiple of 15 is
+taken to it."
+  (pcase-let ((`(,x ,y ,w ,h ,a ,kind) box))
+    (cl-flet ((snap (deg) (let ((s (* 15 (round deg 15))))
+                            (if (< (abs (- deg s)) 4) s deg))))
+      (pcase handle
+        ('nil (list (+ x (- mx x0)) (+ y (- my y0)) w h a kind))
+        ('rotate
+         (let ((c (texpresso-view--global box 0 0)))
+           (list x y w h
+                 (snap (radians-to-degrees (atan (- (car c) mx) (- (cdr c) my))))
+                 kind)))
+        ((or 'west 'east)
+         (let* ((other (texpresso-view--global box (if (eq handle 'east) (- (/ w 2.0)) (/ w 2.0)) 0))
+                (dx (- mx (car other))) (dy (- my (cdr other)))
+                (len (max 1 (sqrt (+ (* dx dx) (* dy dy)))))
+                ;; the line's angle points from its west end to its east end
+                (deg (snap (radians-to-degrees (if (eq handle 'east) (atan (- dy) dx)
+                                                 (atan dy (- dx))))))
+                (dir (texpresso-view--turned 1 0 deg))
+                (cx (+ (car other) (* (if (eq handle 'east) 0.5 -0.5) len (car dir))))
+                (cy (+ (cdr other) (* (if (eq handle 'east) 0.5 -0.5) len (cdr dir)))))
+           (list (- cx (/ len 2.0)) (- cy (/ h 2.0)) len h deg kind)))
+        (_
+         (let* ((p (texpresso-view--local box mx my))
+                (local (texpresso-view--resized (list (- (/ w 2.0)) (- (/ h 2.0)) w h)
+                                                handle (car p) (cdr p) aspect))
+                (c (texpresso-view--global box (+ (nth 0 local) (/ (nth 2 local) 2.0))
+                                           (+ (nth 1 local) (/ (nth 3 local) 2.0)))))
+           (list (- (car c) (/ (nth 2 local) 2.0)) (- (cdr c) (/ (nth 3 local) 2.0))
+                 (nth 2 local) (nth 3 local) a kind)))))))
 
 (defun texpresso-view--resize-handle (statement handle)
   "The handle a drag of HANDLE resizes STATEMENT's object by.
@@ -1730,33 +1900,114 @@ A text box's height is its text's: its corners change its width only."
 A press on an object selects it; a drag moves it, or, from a handle of
 the object selected, resizes it (a picture's corners keep its aspect);
 the source follows as it moves, and the whole drag is one undo.  A
-double click shows its node in the source, to edit it.  A press
-elsewhere takes the selection away and marks where the next object
-goes, and the click or drag that follows does what it did before: jump
-to the source, copy text."
+press on one of several selected, or of a group, drags them all.  A
+double click types its text on the slide.  A press elsewhere takes the
+selection away and marks where the next object goes; on a slide, a drag
+from there frames the objects to select; a click, or elsewhere a drag,
+does what it did before: jump to the source, copy text."
   (interactive "e")
   (let* ((posn (event-start event))
          (win (posn-window posn))
          (at (texpresso-view--event-units event))
          (hit (and at (texpresso-view--hit (car at) (cdr at)))))
+    (texpresso-view-text-done)
     (when at
       (setq texpresso-view--anchor at))
     (cond
-     (hit
+     ((and hit (cadr hit))
       (select-window win)
       (texpresso-view--drag event (car hit) (cadr hit)))
+     (hit
+      (select-window win)
+      (let* ((now (texpresso-view--selection))
+             (ks (if (and (cdr now) (memq (car hit) now))
+                     now
+                   (texpresso-view--group-of (car hit)))))
+        (if (cdr ks)
+            (progn
+              (texpresso-view--select (cons (car hit) (delq (car hit) (copy-sequence ks))))
+              (texpresso-view--drag-all event ks))
+          (texpresso-view--drag event (car hit) nil))))
      (t
-      (setq texpresso-view--selected nil)
-      (texpresso-view--draw-page)))))
+      (texpresso-view--select nil)
+      (texpresso-view--draw-page)
+      (when (and at (texpresso-view--deck-p))
+        (select-window win)
+        (texpresso-view--band event))))))
+
+(defun texpresso-view--drag-all (event ks)
+  "Drag the objects KS together from the press EVENT until the release."
+  (let* ((statements (mapcar #'texpresso-view--statement ks))
+         (boxes (mapcar (lambda (k) (cdr (assq k (texpresso-view--boxes)))) ks))
+         (posn (event-start event))
+         (win (posn-window posn))
+         (xy (posn-x-y posn))
+         (oxy (posn-object-x-y posn))
+         (origin (cons (- (car xy) (car oxy)) (- (cdr xy) (cdr oxy))))
+         (u (texpresso-view--units-per-pixel))
+         (x0 (* (car oxy) u))
+         (y0 (* (cdr oxy) u))
+         (mouse-fine-grained-tracking t)
+         (group (and (car statements) (prepare-change-group (car (car statements)))))
+         (done (make-list (length ks) (cons 0 0)))
+         moved dx dy ev)
+    (texpresso-view--draw-page)
+    (when group
+      (activate-change-group group))
+    (cl-flet ((follow (p)
+                (let ((pxy (posn-x-y p)))
+                  (when (and pxy (eq (posn-window p) win))
+                    (setq dx (- (* (- (car pxy) (car origin)) u) x0)
+                          dy (- (* (- (cdr pxy) (cdr origin)) u) y0)
+                          moved (or moved (> (abs dx) 0.3) (> (abs dy) 0.3))))))
+              (place ()
+                ;; each one moved by what it still lacks of the whole move
+                (setq done (seq-mapn (lambda (statement d)
+                                       (when statement
+                                         (texpresso-view--shift statement (- dx (car d)) (- dy (cdr d))))
+                                       (cons dx dy))
+                                     statements done))))
+      (unwind-protect
+          (progn
+            (track-mouse
+              (while (mouse-movement-p (setq ev (read-event)))
+                (follow (event-start ev))
+                (when moved
+                  (setq texpresso-view--outlines
+                        (mapcar (lambda (b) (and b (append (list (+ (nth 0 b) dx) (+ (nth 1 b) dy))
+                                                           (nthcdr 2 b))))
+                                boxes))
+                  (texpresso-view--draw-page)
+                  (when (or (not texpresso-view--waiting)
+                            (> (- (float-time) texpresso-view--waiting) 0.3))
+                    (setq texpresso-view--waiting (float-time))
+                    (place)))))
+            (when (and (consp ev) (memq 'drag (event-modifiers ev)))
+              (follow (event-end ev)))
+            (when moved
+              (place)))
+        (when group
+          (accept-change-group group)
+          (undo-amalgamate-change-group group))
+        (setq texpresso-view--outlines nil)
+        (texpresso-view--draw-page)))))
 
 (defun texpresso-view--drag (event k corner)
   "Drag object K from the press EVENT until the release, by handle CORNER if any."
   (let* ((statement (texpresso-view--statement k))
          (box (and statement
-                   (texpresso-view--source-box statement (cdr (assq k (texpresso-view--objects))))))
+                   (let ((b (texpresso-view--source-box statement
+                                                        (cdr (assq k (texpresso-view--objects))))))
+                     (and b (append (seq-take b 4)
+                                    (list (texpresso-view--angle statement)
+                                          (texpresso-view--kind statement)))))))
          (corner (and corner statement (texpresso-view--resize-handle statement corner)))
          (aspect (and statement (eq (texpresso-view--kind statement) 'picture)
                       (not (texpresso-view--key-value statement 'height))))
+         ;; a move snaps to the other objects' edges and middles, and the slide's
+         (others (and (not corner)
+                      (mapcar (lambda (o) (texpresso-view--extent (cdr o)))
+                              (seq-remove (lambda (o) (eql (car o) k)) (texpresso-view--boxes)))))
          (posn (event-start event))
          (win (posn-window posn))
          (xy (posn-x-y posn))
@@ -1781,10 +2032,12 @@ to the source, copy text."
                           (my (* (- (cdr pxy) (cdr origin)) u)))
                       (setq moved (or moved (> (abs (- mx x0)) 0.3) (> (abs (- my y0)) 0.3)))
                       (when moved
-                        (setq new (if corner
-                                      (texpresso-view--resized box corner mx my aspect)
-                                    (list (+ (nth 0 box) (- mx x0)) (+ (nth 1 box) (- my y0))
-                                          (nth 2 box) (nth 3 box))))))))))
+                        (setq new (texpresso-view--dragged box corner mx my x0 y0 aspect))
+                        (unless corner
+                          (pcase-let ((`(,gx ,gy ,guides) (texpresso-view--guides-for new others)))
+                            (setq new (append (list (+ (nth 0 new) gx) (+ (nth 1 new) gy))
+                                              (nthcdr 2 new))
+                                  texpresso-view--guides guides)))))))))
       (unwind-protect
           (progn
             (track-mouse
@@ -1806,11 +2059,12 @@ to the source, copy text."
         (when group
           (accept-change-group group)
           (undo-amalgamate-change-group group))
-        (setq texpresso-view--outline nil)
+        (setq texpresso-view--outline nil
+              texpresso-view--guides nil)
         (texpresso-view--draw-page)))
     (cond
      ((and double (not moved))
-      (texpresso-view-edit-object))
+      (texpresso-view-edit-text))
      ((not moved)
       (message "Drag it to move it, a handle to resize it; right-click it for more")))))
 
@@ -1932,16 +2186,34 @@ Point goes to BEG."
         (cons (progn (goto-char beg) (line-beginning-position))
               (progn (goto-char end) (min (point-max) (1+ (line-end-position)))))))))
 
+(defun texpresso-view--selected-statements ()
+  "The nodes of the objects selected: ((BUFFER BEG END) …), markers, in order."
+  (or (delq nil (mapcar #'texpresso-view--statement (texpresso-view--selection)))
+      (list (texpresso-view--selected-statement))))
+
+(defun texpresso-view--take-out (statements)
+  "Delete the nodes STATEMENTS, whole lines, and return their text, in order."
+  (let ((regions (mapcar (lambda (statement)
+                           (let ((r (texpresso-view--statement-region statement)))
+                             (with-current-buffer (car statement)
+                               (list (current-buffer) (copy-marker (car r)) (copy-marker (cdr r))))))
+                         statements)))
+    (prog1 (mapconcat (lambda (r) (with-current-buffer (car r)
+                                    (buffer-substring (nth 1 r) (nth 2 r))))
+                      regions "")
+      (dolist (r regions)
+        (with-current-buffer (car r)
+          (delete-region (nth 1 r) (nth 2 r))
+          (set-marker (nth 1 r) nil)
+          (set-marker (nth 2 r) nil))))))
+
 (defun texpresso-view-delete-object ()
-  "Delete the object selected from its slide, onto the kill ring."
+  "Delete the objects selected from their slide, onto the kill ring."
   (interactive)
-  (let* ((statement (texpresso-view--selected-statement))
-         (region (texpresso-view--statement-region statement)))
-    (with-current-buffer (car statement)
-      (kill-region (car region) (cdr region)))
-    (setq texpresso-view--selected nil)
-    (texpresso-view--draw-page)
-    (message "Deleted (C-y in the source brings it back)")))
+  (kill-new (texpresso-view--take-out (texpresso-view--selected-statements)))
+  (texpresso-view--select nil)
+  (texpresso-view--draw-page)
+  (message "Deleted (C-y pastes it back)"))
 
 (defun texpresso-view-backspace ()
   "Delete the object selected, or turn back a page if none is."
@@ -1952,8 +2224,23 @@ Point goes to BEG."
 
 (defun texpresso-view-duplicate-object ()
   "Put a copy of the object selected over it, a little lower and to the right.
-The copy is selected."
+The copy is selected.  Several selected are copied over all the others."
   (interactive)
+  (if (cdr (texpresso-view--selection))
+      (let ((texts (mapcar (lambda (statement)
+                             (with-current-buffer (car statement)
+                               (buffer-substring-no-properties (nth 1 statement) (nth 2 statement))))
+                           (texpresso-view--selected-statements)))
+            ks)
+        (dolist (text texts)
+          (texpresso-view--shift (texpresso-view--insert-object text) 3 3)
+          (push texpresso-view--selected ks))
+        (texpresso-view--select (nreverse ks))
+        (texpresso-view--draw-page))
+    (texpresso-view--duplicate-one)))
+
+(defun texpresso-view--duplicate-one ()
+  "Put a copy of the object selected over it, and select it."
   (let* ((statement (texpresso-view--selected-statement))
          (region (texpresso-view--statement-region statement))
          copy)
@@ -2192,34 +2479,34 @@ It is saved in the document's figures/ as pasted-DATE-TIME.png."
       'private)))
 
 (defun texpresso-view-add-text ()
-  "Put a text box on the slide, at the last click, and the cursor in its text.
-The word Text is selected in the source window: type over it."
+  "Put a text box on the slide, at the last click, and type its text there.
+The word Text is selected in the small box under it: type over it."
   (interactive)
   (let ((place (texpresso-view--place)))
     (texpresso-view--insert-object
      (format "\\node[tv,text width=40\\tvu,align=left] at (%s,%s) {Text};"
              (texpresso-view--number (car place)) (texpresso-view--number (cdr place))))
     (texpresso-view--draw-page)
-    (texpresso-view-edit-object)
-    (message "Type the text in the source window: it shows on the slide as you type")))
+    (texpresso-view-edit-text)))
 
 (defun texpresso-view--move-to-end (front)
-  "Put the object selected over all the others, or with FRONT nil under them."
-  (let* ((statement (texpresso-view--selected-statement))
-         (region (texpresso-view--statement-region statement))
-         (n (length (texpresso-view--frame-statements))))
-    (with-current-buffer (car statement)
-      (let ((text (buffer-substring (car region) (cdr region))))
-        (delete-region (car region) (cdr region))
-        (pcase-let* ((`(,_ ,beg ,end) (texpresso-view--frame))
-                     (layer (texpresso-view--layer beg end)))
-          (save-excursion
-            (if front
-                (goto-char (save-excursion (goto-char (cdr layer)) (line-beginning-position)))
-              (goto-char (car layer))
-              (forward-line 1))
-            (insert text)))))
-    (setq texpresso-view--selected (if front n 1))
+  "Put the objects selected over all the others, or with FRONT nil under them.
+They keep their order among themselves."
+  (let* ((statements (texpresso-view--selected-statements))
+         (count (length statements))
+         (n (length (texpresso-view--frame-statements)))
+         (buf (car (car statements)))
+         (text (texpresso-view--take-out statements)))
+    (with-current-buffer buf
+      (pcase-let* ((`(,_ ,beg ,end) (texpresso-view--frame))
+                   (layer (texpresso-view--layer beg end)))
+        (save-excursion
+          (if front
+              (goto-char (save-excursion (goto-char (cdr layer)) (line-beginning-position)))
+            (goto-char (car layer))
+            (forward-line 1))
+          (insert text))))
+    (texpresso-view--select (number-sequence (if front (1+ (- n count)) 1) (if front n count)))
     (texpresso-view--draw-page)))
 
 (defun texpresso-view-bring-to-front ()
@@ -2233,25 +2520,27 @@ The word Text is selected in the source window: type over it."
   (texpresso-view--move-to-end nil))
 
 (defun texpresso-view-copy-object ()
-  "Copy the object selected, to paste it on this slide or another."
+  "Copy the objects selected, to paste them on this slide or another."
   (interactive)
-  (let ((region (texpresso-view--statement-region (texpresso-view--selected-statement))))
-    (with-current-buffer (car (texpresso-view--selected-statement))
-      (kill-ring-save (car region) (cdr region)))
-    (message "Copied: paste it with the toolbar's menu or a right click")))
+  (kill-new (mapconcat (lambda (statement)
+                         (let ((r (texpresso-view--statement-region statement)))
+                           (with-current-buffer (car statement)
+                             (buffer-substring-no-properties (car r) (cdr r)))))
+                       (texpresso-view--selected-statements) ""))
+  (message "Copied: paste it with a right click"))
 
-(defun texpresso-view-cut-object ()
-  "Cut the object selected, to paste it on this slide or another."
-  (interactive)
-  (texpresso-view-delete-object)
-  (message "Cut: paste it with a right click"))
-
-(defun texpresso-view--copied-object ()
-  "The object last copied or cut, a node, if that is what was copied last."
+(defun texpresso-view--copied-objects ()
+  "The objects last copied or cut, their nodes, if that is what was copied last."
   (let ((text (ignore-errors (current-kill 0 t))))
-    (and (stringp text)
-         (string-match "\\`[ \t\n]*\\(\\\\node[ \t\n]*\\[tv[],][^\0]*;\\)[ \t\n]*\\'" text)
-         (substring-no-properties (match-string 1 text)))))
+    (when (and (stringp text) (string-match-p "\\`[ \t\n]*\\\\node[ \t\n]*\\[tv[],]" text))
+      (with-temp-buffer
+        (insert text)
+        (let ((statements (texpresso-view--statements (point-min) (point-max))))
+          (and statements
+               (string-match-p "\\`[ \t\n]*\\'"
+                               (buffer-substring (cdr (car (last statements))) (point-max)))
+               (mapcar (lambda (s) (buffer-substring-no-properties (car s) (cdr s)))
+                       statements)))))))
 
 (defun texpresso-view-paste ()
   "Paste on the slide what was copied: a picture, or an object.
@@ -2259,16 +2548,19 @@ A picture on the clipboard (a screenshot) is saved in the document's
 figures/ and put where the slide was last clicked; an object copied or
 cut goes where it was, a little lower when that place is taken."
   (interactive)
-  (let ((object (texpresso-view--copied-object)))
+  (let ((objects (texpresso-view--copied-objects)))
     (cond
-     ((and (not object) (texpresso-view--clipboard-png))
+     ((and (not objects) (texpresso-view--clipboard-png))
       (texpresso-view-paste-image))
-     (object
+     (objects
       (let* ((places (delq nil (mapcar #'texpresso-view--centre
                                        (texpresso-view--frame-statements))))
-             (statement (texpresso-view--insert-object object)))
-        (while (member (texpresso-view--centre statement) places)
-          (texpresso-view--shift statement 3 3))
+             (statements (mapcar #'texpresso-view--insert-object objects))
+             (n (length (texpresso-view--frame-statements))))
+        (while (seq-some (lambda (s) (member (texpresso-view--centre s) places)) statements)
+          (dolist (s statements)
+            (texpresso-view--shift s 3 3)))
+        (texpresso-view--select (number-sequence (1+ (- n (length statements))) n))
         (texpresso-view--draw-page)))
      (t (user-error "Nothing to paste: no picture on the clipboard, no object copied")))))
 
@@ -2321,6 +2613,15 @@ cut goes where it was, a little lower when that place is taken."
     (front "M3 3 H11 V11 H3 Z" (fill "M8 8 H17 V17 H8 Z"))
     (back (fill "M3 3 H11 V11 H3 Z") "M8 8 H17 V17 H8 Z")
     (slides "M3 3 H17 V7 H3 Z" "M3 9 H17 V13 H3 Z" "M3 15 H17 V17")
+    (shape "M3 9 H11 V17 H3 Z" "M9.5 8 A4.5 4.5 0 1 1 18.5 8 A4.5 4.5 0 1 1 9.5 8 Z")
+    (line "M4 16 L16 4")
+    (bold "M6 4 H11 C14 4 14 9.5 11 9.5 H6 Z" "M6 9.5 H12 C15.5 9.5 15.5 16 12 16 H6 Z")
+    (italic "M9 4 H15" "M5 16 H11" "M12 4 L8 16")
+    (align-left "M3 5 H17" "M3 9 H12" "M3 13 H17" "M3 17 H10")
+    (align-center "M3 5 H17" "M6 9 H14" "M3 13 H17" "M7 17 H13")
+    (align-right "M3 5 H17" "M8 9 H17" "M3 13 H17" "M10 17 H17")
+    (rotate-left "M5 8 A6 6 0 1 1 6 14" "M2 5 L5 8 L8 5")
+    (rotate-right "M15 8 A6 6 0 1 0 14 14" "M18 5 L15 8 L12 5")
     (new-slide "M3 5 H17 V15 H3 Z" "M10 7.5 V12.5" "M7.5 10 H12.5"))
   "The toolbar's icons, on a 20 x 20 grid: (NAME PATH …).
 A path is a string of SVG path data, stroked; (fill PATH) is filled too,
@@ -2344,23 +2645,29 @@ and drawn over what comes before it.")
   (let ((map (make-sparse-keymap)))
     (define-key map [header-line down-mouse-1] #'ignore)
     (define-key map [header-line mouse-1] #'texpresso-view-toolbar-click)
+    (define-key map [tab-line down-mouse-1] #'ignore)
+    (define-key map [tab-line mouse-1] #'texpresso-view-toolbar-click)
     map)
-  "The keys of a toolbar button.")
+  "The keys of a toolbar button, in the tab line or the header line.")
 
-(defun texpresso-view--button (icon label help action &optional off)
+(defun texpresso-view--button (icon label help action &optional off active)
   "A toolbar button: ICON (a name in `texpresso-view--icons', or nil) and LABEL.
-HELP is its tooltip; ACTION the command a click runs (with the click as
-its event when it takes one); OFF greys it out and makes it do nothing."
+ICON may also be an image.  HELP is its tooltip; ACTION the command a
+click runs (with the click as its event when it takes one); OFF greys it
+out and makes it do nothing; ACTIVE shows it pressed."
   (let* ((color (face-attribute (if off 'shadow 'default) :foreground nil t))
          (color (if (and (stringp color) (not (string-prefix-p "unspecified" color))) color "gray50"))
          (text (concat " "
-                       (if icon (propertize " " 'display (texpresso-view--icon icon color)) "")
+                       (cond ((null icon) "")
+                             ((symbolp icon) (propertize " " 'display (texpresso-view--icon icon color)))
+                             (t (propertize " " 'display icon)))
                        (if (and icon label) " " "")
                        (or label "")
                        " ")))
     (if off
         (propertize text 'face 'shadow 'help-echo help)
       (propertize text
+                  'face (and active 'texpresso-view-button-on)
                   'mouse-face 'highlight
                   'help-echo help
                   'pointer 'hand
@@ -2399,6 +2706,10 @@ its event when it takes one); OFF greys it out and makes it do nothing."
                                              #'texpresso-view-add-text)
                      (texpresso-view--button 'picture "Picture ▾" "Insert a picture"
                                              #'texpresso-view-picture-menu)
+                     (texpresso-view--button 'shape "Shape ▾" "Insert a shape"
+                                             #'texpresso-view-shape-menu)
+                     (texpresso-view--button 'line "Line ▾" "Insert a line or an arrow"
+                                             #'texpresso-view-line-menu)
                      (propertize " │" 'face 'shadow)
                      (texpresso-view--button 'duplicate nil "Duplicate the object selected"
                                              #'texpresso-view-duplicate-object off)
@@ -2458,7 +2769,16 @@ its event when it takes one); OFF greys it out and makes it do nothing."
       ("Size"
        ["Larger" texpresso-view-larger ,on]
        ["Smaller" texpresso-view-smaller ,on])
+      ("Arrange" ,@(texpresso-view--arrange-items))
+      ("Rotate"
+       ["A quarter to the left" texpresso-view-rotate-left ,on]
+       ["A quarter to the right" texpresso-view-rotate-right ,on]
+       ["Upright" (lambda () (interactive) (texpresso-view-rotate-by
+                                            (- (texpresso-view--angle
+                                                (texpresso-view--selected-statement)))))
+        ,on])
       "---"
+      ["Edit text" texpresso-view-edit-text ,on]
       ["Edit in the source" texpresso-view-edit-object ,on])))
 
 (defun texpresso-view-picture-menu (event)
@@ -2479,10 +2799,11 @@ spot is where a new object goes, and the menu inserts one."
   (let* ((at (texpresso-view--event-units event))
          (hit (and at (texpresso-view--hit (car at) (cdr at)))))
     (select-window (posn-window (event-start event)))
-    (if hit
-        (setq texpresso-view--selected (car hit))
-      (setq texpresso-view--selected nil
-            texpresso-view--anchor (or at texpresso-view--anchor)))
+    (cond
+     ((and hit (memq (car hit) (texpresso-view--selection))))
+     (hit (texpresso-view--select (texpresso-view--group-of (car hit))))
+     (t (texpresso-view--select nil)
+        (setq texpresso-view--anchor (or at texpresso-view--anchor))))
     (texpresso-view--draw-page)
     (popup-menu
      (easy-menu-create-menu
@@ -2492,6 +2813,8 @@ spot is where a new object goes, and the menu inserts one."
         `(["Paste" texpresso-view-paste t]
           ["Text box" texpresso-view-add-text t]
           ("Picture" ,@(texpresso-view--picture-items))
+          ("Shape" ,@(texpresso-view--shape-items))
+          ("Line" ,@(texpresso-view--line-items))
           "---"
           ,@(texpresso-view--slide-items))))
      event)))
@@ -2505,7 +2828,7 @@ spot is where a new object goes, and the menu inserts one."
   '("~/Pictures" "~/Pictures/Screenshots" "~/Downloads" "~/Desktop")
   "Folders whose pictures the picture panel offers, after the document's own."
   :type '(repeat directory)
-  :group 'texpresso)
+  :group 'tex)
 
 (defconst texpresso-view-pictures-buffer-name "*Slide pictures*"
   "The buffer of the picture panel.")
@@ -2665,6 +2988,971 @@ The strip opens if it is closed, to show what changes."
   "Delete the slide on display, onto the kill ring."
   (interactive)
   (texpresso-view--on-slide #'texpresso-view-slides-delete))
+
+;;; The objects' look, written as TikZ keys in the node's [ ]: its fill,
+;;; its border (draw), the border's weight and dashes, the text's colour,
+;;; size, bold, italic and alignment, its opacity and angle; a line's
+;;; colour, weight, dashes and arrow heads in its `tv line={…}'.  The
+;;; format bar over the page, the header line under the toolbar, shows
+;;; them for the object selected and changes them; a colour is picked from
+;;; a palette that takes the bar's place, as xcolor expressions (red!40).
+
+(defun texpresso-view--options-region (statement)
+  "Where STATEMENT's node options are: (BEG . END) inside its [ ], or nil."
+  (pcase-let ((`(,buf ,beg ,end) statement))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char beg)
+        (when (re-search-forward "\\\\node[ \t\n]*\\[" end t)
+          (let ((close (texpresso-view--group-end (1- (point)) ?\[ ?\])))
+            (and close (<= close end) (cons (point) (1- close)))))))))
+
+(defun texpresso-view--split-options (text)
+  "TEXT, a TikZ option list, as its items: trimmed strings, empty ones left out."
+  (let ((depth 0) (start 0) items)
+    (dotimes (i (length text))
+      (let ((c (aref text i)))
+        (cond ((memq c '(?\{ ?\[)) (setq depth (1+ depth)))
+              ((memq c '(?\} ?\])) (setq depth (1- depth)))
+              ((and (eq c ?,) (= depth 0))
+               (push (string-trim (substring text start i)) items)
+               (setq start (1+ i))))))
+    (push (string-trim (substring text start)) items)
+    (seq-remove #'string-empty-p (nreverse items))))
+
+(defun texpresso-view--item-key (item)
+  "The key of the option ITEM: what comes before its =, or all of it."
+  (string-trim (if (string-match "=" item) (substring item 0 (match-beginning 0)) item)))
+
+(defun texpresso-view--item-value (item)
+  "The value of the option ITEM, after its =, or t for a key alone."
+  (if (string-match "=" item) (string-trim (substring item (match-end 0))) t))
+
+(defun texpresso-view--unbrace (value)
+  "VALUE without the braces around all of it, if it has them."
+  (if (and (> (length value) 1) (eq (aref value 0) ?\{)
+           (let ((depth 0) (i 0) (whole t))
+             (while (and whole (< i (length value)))
+               (pcase (aref value i)
+                 (?\{ (setq depth (1+ depth)))
+                 (?\} (setq depth (1- depth))
+                      (when (and (= depth 0) (< i (1- (length value))))
+                        (setq whole nil))))
+               (setq i (1+ i)))
+             whole))
+      (substring value 1 -1)
+    value))
+
+(defun texpresso-view--items (statement &optional line)
+  "STATEMENT's node options as items; with LINE, its tv line's."
+  (let* ((region (texpresso-view--options-region statement))
+         (items (and region
+                     (with-current-buffer (car statement)
+                       (texpresso-view--split-options
+                        (buffer-substring-no-properties (car region) (cdr region)))))))
+    (if line
+        (let ((item (seq-find (lambda (i) (equal (texpresso-view--item-key i) "tv line")) items)))
+          (and item (stringp (texpresso-view--item-value item))
+               (texpresso-view--split-options
+                (texpresso-view--unbrace (texpresso-view--item-value item)))))
+      items)))
+
+(defun texpresso-view--option (statement key &optional line)
+  "The value STATEMENT gives KEY: a string, t for the key alone, or nil.
+With LINE, among the options of its tv line."
+  (let ((item (seq-find (lambda (i) (equal (texpresso-view--item-key i) key))
+                        (texpresso-view--items statement line))))
+    (and item (texpresso-view--item-value item))))
+
+(defun texpresso-view--edit-items (statement fn &optional line)
+  "Rewrite STATEMENT's node options as FN makes them from the items it has.
+With LINE, the options of its tv line."
+  (let ((region (texpresso-view--options-region statement)))
+    (when region
+      (with-current-buffer (car statement)
+        (let* ((old (buffer-substring-no-properties (car region) (cdr region)))
+               (items (texpresso-view--split-options old))
+               (new (if line
+                        (mapcar (lambda (i)
+                                  (if (not (equal (texpresso-view--item-key i) "tv line"))
+                                      i
+                                    (let ((v (texpresso-view--item-value i)))
+                                      (format "tv line={%s}"
+                                              (string-join
+                                               (funcall fn (texpresso-view--split-options
+                                                            (if (stringp v) (texpresso-view--unbrace v) "")))
+                                               ",")))))
+                                items)
+                      (funcall fn items)))
+               (text (string-join new ",")))
+          (unless (equal text old)
+            (save-excursion
+              (goto-char (car region))
+              (delete-region (car region) (cdr region))
+              (insert text))))))))
+
+(defun texpresso-view--put-option (statement key value &optional line)
+  "Give KEY the VALUE in STATEMENT's options; with LINE, its tv line's.
+VALUE is a string, t for the key alone, or nil to take the key away."
+  (texpresso-view--edit-items
+   statement
+   (lambda (items)
+     (let* ((item (cond ((null value) nil) ((eq value t) key) (t (format "%s=%s" key value))))
+            (found nil)
+            (new (delq nil (mapcar (lambda (i)
+                                     (if (equal (texpresso-view--item-key i) key)
+                                         (unless found (setq found t) item)
+                                       i))
+                                   items))))
+       (if (or found (null item)) new (append new (list item)))))
+   line))
+
+(defun texpresso-view--angle (statement)
+  "STATEMENT's angle, in degrees counter-clockwise, or 0."
+  (let ((v (texpresso-view--option statement "rotate")))
+    (or (and (stringp v) (string-match-p "\\`-?[0-9.]+\\'" v) (string-to-number v)) 0)))
+
+(defconst texpresso-view--dashes
+  '("solid" "dashed" "dotted" "densely dashed" "densely dotted" "loosely dashed"
+    "loosely dotted" "dash dot")
+  "TikZ's dash keys: one at most in an object's options.")
+
+(defun texpresso-view--arrow-item-p (item)
+  "Non-nil if the option ITEM gives a line's arrow heads, as -{Stealth}."
+  (string-match-p "\\`\\(?:{[^}]*}\\|[<>|]*\\)-\\(?:{[^}]*}\\|[<>|]*\\)\\'" item))
+
+(defun texpresso-view--font (statement)
+  "STATEMENT's text style: (SIZE BOLD ITALIC), SIZE in points or nil."
+  (let ((v (texpresso-view--option statement "font")))
+    (if (stringp v)
+        (list (and (string-match "\\\\fontsize{\\([0-9.]+\\)}" v)
+                   (string-to-number (match-string 1 v)))
+              (and (string-match-p "\\\\bfseries" v) t)
+              (and (string-match-p "\\\\itshape" v) t))
+      (list nil nil nil))))
+
+(defun texpresso-view--set-font (statement size bold italic)
+  "Give STATEMENT's text the SIZE in points (nil: the slide's), BOLD and ITALIC."
+  (let ((v (concat (if size
+                       (format "\\fontsize{%s}{%s}\\selectfont" (texpresso-view--number size)
+                               (texpresso-view--number (* 1.2 size)))
+                     "")
+                   (if bold "\\bfseries" "")
+                   (if italic "\\itshape" ""))))
+    (texpresso-view--put-option statement "font" (and (not (string-empty-p v)) (concat "{" v "}")))))
+
+(defun texpresso-view--format (fn)
+  "Call FN with each object selected's node and kind, then draw the page again."
+  (dolist (statement (texpresso-view--selected-statements))
+    (funcall fn statement (texpresso-view--kind statement)))
+  (setq texpresso-view--format-cache nil)
+  (texpresso-view--draw-page))
+
+(defun texpresso-view-set-color (target color)
+  "Give the object selected's TARGET the COLOR, an xcolor expression; nil: none.
+TARGET is `fill', `border', `text', or `line' for a line's colour."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (pcase target
+       ('fill (texpresso-view--put-option statement "fill" color))
+       ('text (texpresso-view--put-option statement "text" color))
+       ('line (texpresso-view--put-option statement "color" (or color "black") t))
+       ('border
+        (texpresso-view--put-option statement "draw" color)
+        (if color
+            (unless (texpresso-view--option statement "line width")
+              (texpresso-view--put-option statement "line width" "1pt"))
+          (texpresso-view--put-option statement "line width" nil)))))))
+
+(defun texpresso-view-set-weight (points)
+  "Make the object selected's border, or its line, POINTS thick; 0: no border."
+  (texpresso-view--format
+   (lambda (statement kind)
+     (cond
+      ((eq kind 'line)
+       (texpresso-view--put-option statement "line width"
+                                   (format "%spt" (texpresso-view--number (max 0.5 points))) t))
+      ((zerop points)
+       (texpresso-view--put-option statement "draw" nil)
+       (texpresso-view--put-option statement "line width" nil))
+      (t
+       (texpresso-view--put-option statement "line width"
+                                   (format "%spt" (texpresso-view--number points)))
+       (unless (texpresso-view--option statement "draw")
+         (texpresso-view--put-option statement "draw" "black")))))))
+
+(defun texpresso-view-set-dash (style)
+  "Draw the object selected's border, or its line, in STYLE.
+STYLE is one of `texpresso-view--dashes': solid, dashed, dotted…"
+  (texpresso-view--format
+   (lambda (statement kind)
+     (texpresso-view--edit-items
+      statement
+      (lambda (items)
+        (append (seq-remove (lambda (i) (member i texpresso-view--dashes)) items)
+                (unless (equal style "solid") (list style))))
+      (eq kind 'line))
+     (unless (or (eq kind 'line) (texpresso-view--option statement "draw"))
+       (texpresso-view--put-option statement "draw" "black")))))
+
+(defun texpresso-view-set-arrows (spec)
+  "Give the line selected the arrow heads SPEC, as -{Stealth}; - for none."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (texpresso-view--edit-items
+      statement
+      (lambda (items) (cons spec (seq-remove #'texpresso-view--arrow-item-p items)))
+      t))))
+
+(defun texpresso-view-set-size (points)
+  "Make the text of the object selected POINTS large; nil: the slide's size."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (pcase-let ((`(,_ ,bold ,italic) (texpresso-view--font statement)))
+       (texpresso-view--set-font statement points bold italic)))))
+
+(defun texpresso-view-toggle-bold ()
+  "Make the text of the object selected bold, or bold no more."
+  (interactive)
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (pcase-let ((`(,size ,bold ,italic) (texpresso-view--font statement)))
+       (texpresso-view--set-font statement size (not bold) italic)))))
+
+(defun texpresso-view-toggle-italic ()
+  "Make the text of the object selected italic, or italic no more."
+  (interactive)
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (pcase-let ((`(,size ,bold ,italic) (texpresso-view--font statement)))
+       (texpresso-view--set-font statement size bold (not italic))))))
+
+(defun texpresso-view-set-align (where)
+  "Align the text of the object selected WHERE: left, center or right."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (texpresso-view--put-option statement "align" where))))
+
+(defun texpresso-view-set-opacity (opacity)
+  "Make the object selected OPACITY opaque, from 0 to 1."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (texpresso-view--put-option statement "opacity"
+                                 (and (< opacity 1) (format "%s" opacity))))))
+
+(defun texpresso-view-rotate-by (degrees)
+  "Turn the object selected by DEGREES, counter-clockwise, about its centre."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (let ((a (mod (+ (texpresso-view--angle statement) degrees) 360)))
+       (when (> a 180) (setq a (- a 360)))
+       (texpresso-view--put-option statement "rotate"
+                                   (and (/= a 0) (texpresso-view--number a)))))))
+
+(defun texpresso-view-rotate-left ()
+  "Turn the object selected a quarter turn to the left."
+  (interactive)
+  (texpresso-view-rotate-by 90))
+
+(defun texpresso-view-rotate-right ()
+  "Turn the object selected a quarter turn to the right."
+  (interactive)
+  (texpresso-view-rotate-by -90))
+
+;;; Colours: a palette of xcolor expressions, and their RGB to draw them.
+
+(defconst texpresso-view--base-colors
+  '(("red" 1 0 0) ("green" 0 1 0) ("blue" 0 0 1) ("cyan" 0 1 1) ("magenta" 1 0 1)
+    ("yellow" 1 1 0) ("black" 0 0 0) ("white" 1 1 1) ("gray" 0.5 0.5 0.5)
+    ("darkgray" 0.25 0.25 0.25) ("lightgray" 0.75 0.75 0.75) ("brown" 0.75 0.5 0.25)
+    ("lime" 0.75 1 0) ("olive" 0.5 0.5 0) ("orange" 1 0.5 0) ("pink" 1 0.75 0.75)
+    ("purple" 0.75 0 0.25) ("teal" 0 0.5 0.5) ("violet" 0.5 0 0.5))
+  "The base colours of xcolor, with their RGB.")
+
+(defconst texpresso-view--hues
+  '("red" "orange" "yellow" "green!70!black" "cyan!80!black" "blue" "violet" "magenta")
+  "The palette's hues, each in four shades.")
+
+(defun texpresso-view--palette-colors ()
+  "The colours the palette offers, as xcolor expressions."
+  (append '("black" "black!70" "black!45" "black!20" "white")
+          (apply #'append
+                 (mapcar (lambda (h) (list (concat h "!60!black") h (concat h "!40") (concat h "!15")))
+                         texpresso-view--hues))))
+
+(defun texpresso-view--color-hex (expr)
+  "The colour of the xcolor expression EXPR as #RRGGBB, or nil if unknown.
+EXPR is a base colour, mixed in turn with others: red!40, blue!60!black."
+  (let* ((parts (split-string expr "!"))
+         (rgb (cdr (assoc (car parts) texpresso-view--base-colors))))
+    (setq parts (cdr parts))
+    (while (and rgb parts)
+      (let ((share (/ (string-to-number (car parts)) 100.0))
+            (other (if (cdr parts) (cdr (assoc (cadr parts) texpresso-view--base-colors)) '(1 1 1))))
+        (setq rgb (and other (seq-mapn (lambda (a b) (+ (* share a) (* (- 1 share) b))) rgb other))
+              parts (cddr parts))))
+    (and rgb (apply #'format "#%02x%02x%02x" (mapcar (lambda (v) (round (* 255 v))) rgb)))))
+
+(defun texpresso-view--chip (color)
+  "A small square of COLOR, an xcolor expression (nil: none), as an image."
+  (let* ((size (max 14 (round (* 0.9 (frame-char-height)))))
+         (svg (svg-create size size))
+         (hex (and color (texpresso-view--color-hex color))))
+    (svg-rectangle svg 1 1 (- size 2) (- size 2) :fill (or hex "white")
+                   :stroke "gray50" :stroke-width 1)
+    (unless color
+      (svg-line svg 2 (- size 2) (- size 2) 2 :stroke "red" :stroke-width 1.5))
+    (svg-image svg :ascent 'center :scale 1.0 :margin 1)))
+
+;;; The format bar.
+
+(defface texpresso-view-button-on
+  '((t :inherit region))
+  "A toolbar button that is on: bold for bold text, the text's alignment."
+  :group 'tex)
+
+(defun texpresso-view--choose (event title choices fn)
+  "Pop up the menu TITLE at EVENT of CHOICES, ((LABEL . VALUE) …).
+FN gets the value picked."
+  (let ((value (x-popup-menu event (list title (cons title choices)))))
+    (when value
+      (funcall fn value))))
+
+(defun texpresso-view-weight-menu (event)
+  "The format bar's border or line weight menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Weight"
+                          '(("None" . 0) ("0.5 pt" . 0.5) ("1 pt" . 1) ("1.5 pt" . 1.5) ("2 pt" . 2)
+                            ("3 pt" . 3) ("4 pt" . 4) ("6 pt" . 6))
+                          #'texpresso-view-set-weight))
+
+(defun texpresso-view-dash-menu (event)
+  "The format bar's dash menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Dashes"
+                          '(("Solid" . "solid") ("Dashed" . "dashed") ("Dotted" . "dotted")
+                            ("Dense dashes" . "densely dashed") ("Dash and dot" . "dash dot"))
+                          #'texpresso-view-set-dash))
+
+(defun texpresso-view-arrows-menu (event)
+  "The format bar's arrow heads menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Arrow heads"
+                          '(("None" . "-") ("At the end" . "-{Stealth}") ("At the start" . "{Stealth}-")
+                            ("At both ends" . "{Stealth}-{Stealth}"))
+                          #'texpresso-view-set-arrows))
+
+(defun texpresso-view-size-menu (event)
+  "The format bar's text size menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Text size"
+                          (cons '("The slide's" . none)
+                                (mapcar (lambda (n) (cons (format "%d pt" n) n))
+                                        '(8 9 10 11 12 14 16 18 20 24 28 32 36 44)))
+                          (lambda (v) (texpresso-view-set-size (and (numberp v) v)))))
+
+(defun texpresso-view-opacity-menu (event)
+  "The format bar's opacity menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Opacity"
+                          '(("100%" . 1) ("75%" . 0.75) ("50%" . 0.5) ("25%" . 0.25))
+                          #'texpresso-view-set-opacity))
+
+(defun texpresso-view--palette-action (color)
+  "What a click on COLOR in the palette does."
+  (lambda ()
+    (interactive)
+    (let ((target texpresso-view--palette))
+      (setq texpresso-view--palette nil)
+      (texpresso-view-set-color target color))))
+
+(defun texpresso-view-palette-cancel ()
+  "Close the palette, the colour as it was."
+  (interactive)
+  (setq texpresso-view--palette nil
+        texpresso-view--format-cache nil)
+  (force-mode-line-update t))
+
+(defun texpresso-view--open-palette (target)
+  "What a click on a colour button for TARGET does: the palette for it."
+  (lambda ()
+    (interactive)
+    (setq texpresso-view--palette target
+          texpresso-view--format-cache nil)
+    (force-mode-line-update t)))
+
+(defun texpresso-view--swatch (color)
+  "A colour of the palette: its chip, a click picking COLOR."
+  (propertize " " 'display (texpresso-view--chip color)
+              'mouse-face 'highlight
+              'help-echo (or color "None")
+              'pointer 'hand
+              'texpresso-view-action (texpresso-view--palette-action color)
+              'local-map texpresso-view--toolbar-map))
+
+(defun texpresso-view--palette-bar ()
+  "The palette, in the format bar's place."
+  (concat (propertize (format " %s: " (pcase texpresso-view--palette
+                                        ('fill "Fill") ('border "Border") ('text "Text colour")
+                                        (_ "Line colour")))
+                      'face 'bold)
+          (unless (memq texpresso-view--palette '(text line))
+            (texpresso-view--swatch nil))
+          (mapconcat #'texpresso-view--swatch (texpresso-view--palette-colors) "")
+          " "
+          (texpresso-view--button nil "Cancel" "Keep the colour as it is"
+                                  #'texpresso-view-palette-cancel)))
+
+(defun texpresso-view--color-button (target label color)
+  "The format bar's button for TARGET's colour: LABEL and COLOR's chip."
+  (texpresso-view--button (texpresso-view--chip (and (stringp color) color))
+                          (concat label " ▾") (format "%s colour" label)
+                          (texpresso-view--open-palette target)))
+
+(defun texpresso-view--format-buttons (statement kind)
+  "The format bar's buttons for STATEMENT, an object of KIND."
+  (let* ((sep (propertize " │" 'face 'shadow))
+         (font (texpresso-view--font statement))
+         (align (texpresso-view--option statement "align"))
+         (fill (texpresso-view--option statement "fill"))
+         (draw (texpresso-view--option statement "draw")))
+    (concat
+     (if (eq kind 'line)
+         (concat (texpresso-view--color-button
+                  'line "Colour" (or (texpresso-view--option statement "color" t) "black"))
+                 (texpresso-view--button nil "Weight ▾" "Line weight" #'texpresso-view-weight-menu)
+                 (texpresso-view--button nil "Dash ▾" "Solid, dashed or dotted"
+                                         #'texpresso-view-dash-menu)
+                 (texpresso-view--button nil "Arrows ▾" "Arrow heads" #'texpresso-view-arrows-menu))
+       (concat (unless (eq kind 'picture)
+                 (texpresso-view--color-button 'fill "Fill" fill))
+               (texpresso-view--color-button 'border "Border" (and draw (if (stringp draw) draw "black")))
+               (texpresso-view--button nil "Weight ▾" "Border weight" #'texpresso-view-weight-menu)
+               (texpresso-view--button nil "Dash ▾" "Solid, dashed or dotted border"
+                                       #'texpresso-view-dash-menu)))
+     (when (memq kind '(text shape))
+       (concat sep
+               (texpresso-view--color-button 'text "Text" (or (texpresso-view--option statement "text")
+                                                             "black"))
+               (texpresso-view--button nil (if (car font)
+                                               (format "%s pt ▾" (texpresso-view--number (car font)))
+                                             "Size ▾")
+                                       "Text size" #'texpresso-view-size-menu)
+               (texpresso-view--button 'bold nil "Bold" #'texpresso-view-toggle-bold nil (nth 1 font))
+               (texpresso-view--button 'italic nil "Italic" #'texpresso-view-toggle-italic nil
+                                       (nth 2 font))
+               (texpresso-view--button 'align-left nil "Align left"
+                                       (lambda () (interactive) (texpresso-view-set-align "left"))
+                                       nil (equal align "left"))
+               (texpresso-view--button 'align-center nil "Centre"
+                                       (lambda () (interactive) (texpresso-view-set-align "center"))
+                                       nil (equal align "center"))
+               (texpresso-view--button 'align-right nil "Align right"
+                                       (lambda () (interactive) (texpresso-view-set-align "right"))
+                                       nil (equal align "right"))
+               (texpresso-view--button nil "Edit text" "Type the text on the slide"
+                                       #'texpresso-view-edit-text)))
+     sep
+     (texpresso-view--button nil "Arrange ▾" "Align, centre, spread, group"
+                             #'texpresso-view-arrange-menu)
+     (texpresso-view--button 'rotate-left nil "Turn a quarter to the left"
+                             #'texpresso-view-rotate-left)
+     (texpresso-view--button 'rotate-right nil "Turn a quarter to the right"
+                             #'texpresso-view-rotate-right)
+     (texpresso-view--button nil "Opacity ▾" "How opaque" #'texpresso-view-opacity-menu))))
+
+(defun texpresso-view--format-bar ()
+  "The format bar, for the page window's header line, on a Beamer deck.
+It formats the object selected; while a colour is being picked, it is
+the palette."
+  (cond
+   (texpresso-view--palette (texpresso-view--palette-bar))
+   ((not texpresso-view--selected)
+    (propertize "  Click an object to format it, right-click for more" 'face 'shadow))
+   (t
+    (let ((statement (nth (1- texpresso-view--selected) (texpresso-view--frame-statements))))
+      (when statement
+        (let ((key (list (texpresso-view--selection)
+                         (with-current-buffer (car statement)
+                           (buffer-substring-no-properties (nth 1 statement) (nth 2 statement)))
+                         (face-attribute 'default :foreground nil t)
+                         (frame-char-height))))
+          (if (equal key (car texpresso-view--format-cache))
+              (cdr texpresso-view--format-cache)
+            (let ((bar (concat (let ((n (length (texpresso-view--selection))))
+                                 (and (> n 1) (propertize (format " %d objects │" n) 'face 'bold)))
+                               (texpresso-view--format-buttons statement
+                                                               (texpresso-view--kind statement)))))
+              (setq texpresso-view--format-cache (cons key bar))
+              bar))))))))
+
+;;; Shapes and lines.
+
+(defconst texpresso-view-shapes
+  '(("Rectangle" . "rectangle") ("Rounded rectangle" . "rounded") ("Ellipse" . "ellipse")
+    ("Diamond" . "diamond") ("Triangle" . "triangle"))
+  "The shapes the toolbar offers: (NAME . TV-SHAPE).")
+
+(defconst texpresso-view-line-kinds
+  '(("Line" . "-") ("Arrow" . "-{Stealth}") ("Double arrow" . "{Stealth}-{Stealth}"))
+  "The lines the toolbar offers: (NAME . ARROW-HEADS).")
+
+(defun texpresso-view-insert-shape (shape)
+  "Put the SHAPE, a `tv shape' name, on the slide where it was last pressed."
+  (interactive (list (cdr (assoc (completing-read "Shape: " texpresso-view-shapes nil t)
+                                 texpresso-view-shapes))))
+  (let ((place (texpresso-view--place)))
+    (texpresso-view--insert-object
+     (format "\\node[tv,tv shape=%s,minimum width=24\\tvu,minimum height=14\\tvu,text width=%s\\tvu,align=center,draw=blue!60!black,fill=blue!15,line width=1pt] at (%s,%s) {};"
+             shape (texpresso-view--number (texpresso-view--shape-text-width shape 24))
+             (texpresso-view--number (car place)) (texpresso-view--number (cdr place))))
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view-insert-line (heads)
+  "Put a line with the arrow HEADS (- for none) where the slide was last pressed.
+It lies flat; drag its ends where they go."
+  (interactive (list (cdr (assoc (completing-read "Line: " texpresso-view-line-kinds nil t)
+                                 texpresso-view-line-kinds))))
+  (let ((place (texpresso-view--place)))
+    (texpresso-view--insert-object
+     (format "\\node[tv,tv line={%s,line width=1.5pt},minimum width=24\\tvu] at (%s,%s) {};"
+             heads (texpresso-view--number (car place)) (texpresso-view--number (cdr place))))
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view--shape-items ()
+  "The menu items that put a shape on the slide."
+  (mapcar (lambda (s) (vector (car s) (lambda () (interactive) (texpresso-view-insert-shape (cdr s))) t))
+          texpresso-view-shapes))
+
+(defun texpresso-view--line-items ()
+  "The menu items that put a line on the slide."
+  (mapcar (lambda (l) (vector (car l) (lambda () (interactive) (texpresso-view-insert-line (cdr l))) t))
+          texpresso-view-line-kinds))
+
+(defun texpresso-view-shape-menu (event)
+  "The toolbar's shape menu, at the click EVENT."
+  (interactive "e")
+  (popup-menu (easy-menu-create-menu "Shape" (texpresso-view--shape-items)) event))
+
+(defun texpresso-view-line-menu (event)
+  "The toolbar's line menu, at the click EVENT."
+  (interactive "e")
+  (popup-menu (easy-menu-create-menu "Line" (texpresso-view--line-items)) event))
+
+;;; Text typed on the slide: a small frame under the object, whose text
+;;; goes into the node's braces in the source as it is typed, so the slide
+;;; shows it at once.  It is LaTeX: RET ends a line with \\.  Esc, C-g or
+;;; a press on the page ends.  Where no child frame can be made (a text
+;;; terminal), the same buffer opens in a window under the page.
+
+(defconst texpresso-view-text-buffer-name " *texpresso-view text*"
+  "The buffer the text of an object is typed in.")
+
+(defvar-local texpresso-view--text-target nil
+  "Where the text typed here goes: (BUFFER BEG END), markers in BUFFER.")
+
+(defun texpresso-view--text-region (statement)
+  "Where STATEMENT's text is: (BEG . END) inside the braces after its place."
+  (pcase-let ((`(,buf ,beg ,end) statement))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char beg)
+        (when (and (re-search-forward texpresso-view--at-regexp end t)
+                   (re-search-forward "\\=[ \t\n]*{" end t))
+          (let ((close (texpresso-view--group-end (1- (point)) ?\{ ?\})))
+            (and close (<= close end) (cons (point) (1- close)))))))))
+
+(defun texpresso-view-text-newline ()
+  "End the line of text here: \\\\ in the source, and a new line."
+  (interactive)
+  (insert "\\\\\n"))
+
+(defvar texpresso-view-text-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'texpresso-view-text-newline)
+    (define-key map (kbd "<escape>") #'texpresso-view-text-done)
+    (define-key map (kbd "C-g") #'texpresso-view-text-done)
+    (define-key map (kbd "C-c C-c") #'texpresso-view-text-done)
+    map)
+  "Keys of the text typed on the slide.")
+
+(define-derived-mode texpresso-view-text-mode text-mode "Slide text"
+  "The text of an object on the slide, typed into its source as it is typed.
+\\{texpresso-view-text-mode-map}"
+  (setq-local mode-line-format nil)
+  (setq-local header-line-format
+              (propertize " Type: the slide shows it.  Esc: done" 'face 'shadow)))
+
+(defun texpresso-view--text-changed (&rest _)
+  "Put the text typed into the node it belongs to, in the source.
+It runs in `after-change-functions', where Emacs runs no change hooks:
+those of the source are run again, so that texpresso.el sends TeXpresso
+the change."
+  (pcase-let ((`(,src ,beg ,end) texpresso-view--text-target)
+              (text (buffer-substring-no-properties (point-min) (point-max)))
+              (inhibit-modification-hooks nil))
+    (when (and (buffer-live-p src) (marker-buffer beg))
+      (with-current-buffer src
+        (unless (equal text (buffer-substring-no-properties beg end))
+          (save-excursion
+            (goto-char beg)
+            (delete-region beg end)
+            (insert text)))))))
+
+(defun texpresso-view--image-xy (win)
+  "Where the page's image is in WIN, in pixels from its text area: (X . Y)."
+  (with-current-buffer (window-buffer win)
+    (let ((posn (posn-at-point (1- (point-max)) win)))
+      (or (and posn (posn-x-y posn)) (cons 0 0)))))
+
+(defun texpresso-view--text-frame (buf)
+  "A small frame showing BUF under the object selected; nil where none can be."
+  (let ((win (texpresso-view--window))
+        (box (texpresso-view--box)))
+    (when (and win box (display-graphic-p (window-frame win)))
+      (pcase-let* ((parent (window-frame win))
+                   (`(,ex ,ey . ,_) (window-inside-pixel-edges win))
+                   (`(,ix . ,iy) (texpresso-view--image-xy win))
+                   (px (/ (nth 1 texpresso-view--png) 100.0))
+                   (bottom (apply #'max (mapcar (lambda (c) (cdr (texpresso-view--global box (car c) (cdr c))))
+                                                (list (cons (- (/ (nth 2 box) 2.0)) (/ (nth 3 box) 2.0))
+                                                      (cons (/ (nth 2 box) 2.0) (/ (nth 3 box) 2.0))
+                                                      (cons (- (/ (nth 2 box) 2.0)) (- (/ (nth 3 box) 2.0)))
+                                                      (cons (/ (nth 2 box) 2.0) (- (/ (nth 3 box) 2.0)))))))
+                   (width (max 300 (round (* (nth 2 box) px))))
+                   (height (* 5 (frame-char-height parent)))
+                   (left (max 0 (min (- (frame-inner-width parent) width 20)
+                                     (round (+ ex ix (* (nth 0 box) px))))))
+                   (top (max 0 (min (- (frame-inner-height parent) height 20)
+                                    (round (+ ey iy (* bottom px) 8)))))
+                   (frame (make-frame
+                           `((parent-frame . ,parent) (minibuffer . nil) (undecorated . t)
+                             (left . ,left) (top . ,top)
+                             (width . (text-pixels . ,width)) (height . (text-pixels . ,height))
+                             (no-other-frame . t) (unsplittable . t) (no-special-glyphs . t)
+                             (child-frame-border-width . 1) (internal-border-width . 6)
+                             (vertical-scroll-bars . nil) (horizontal-scroll-bars . nil)
+                             (left-fringe . 0) (right-fringe . 0) (menu-bar-lines . 0)
+                             (tool-bar-lines . 0) (tab-bar-lines . 0) (desktop-dont-save . t)
+                             (visibility . nil)))))
+        (let ((w (frame-root-window frame)))
+          (set-window-buffer w buf)
+          (set-window-dedicated-p w t))
+        (make-frame-visible frame)
+        (select-frame-set-input-focus frame)
+        frame))))
+
+(defun texpresso-view-edit-text ()
+  "Type the text of the object selected on the slide, in a small box under it.
+What is typed goes into the source at once, and the slide shows it;
+Esc ends.  A picture's node is shown in the source instead."
+  (interactive)
+  (let* ((statement (texpresso-view--selected-statement))
+         (region (and (memq (texpresso-view--kind statement) '(text shape))
+                      (texpresso-view--text-region statement))))
+    (if (not region)
+        (texpresso-view-edit-object)
+      (texpresso-view-text-done)
+      (let* ((src (car statement))
+             (beg (with-current-buffer src (copy-marker (car region))))
+             (end (with-current-buffer src (copy-marker (cdr region) t)))
+             (text (with-current-buffer src (buffer-substring-no-properties beg end)))
+             (buf (get-buffer-create texpresso-view-text-buffer-name))
+             frame)
+        (with-current-buffer buf
+          (texpresso-view-text-mode)
+          (let ((inhibit-modification-hooks t))
+            (erase-buffer)
+            (insert text))
+          (setq texpresso-view--text-target (list src beg end))
+          (add-hook 'after-change-functions #'texpresso-view--text-changed nil t)
+          (if (equal text "Text")
+              (texpresso-view--select-placeholder (point-min) (point-max))
+            (goto-char (point-max))))
+        (setq frame (condition-case nil (texpresso-view--text-frame buf) (error nil)))
+        (unless (or frame noninteractive)
+          (select-window (display-buffer-in-side-window buf '((side . bottom) (slot . 1)
+                                                              (window-height . 5)))))
+        (setq texpresso-view--editor (list frame buf beg end))))))
+
+(defun texpresso-view-text-done ()
+  "End typing the text of an object on the slide."
+  (interactive)
+  (when texpresso-view--editor
+    (pcase-let ((`(,frame ,buf ,beg ,end) texpresso-view--editor))
+      (setq texpresso-view--editor nil)
+      (when (frame-live-p frame)
+        (delete-frame frame))
+      (when (buffer-live-p buf)
+        (let ((win (get-buffer-window buf t)))
+          (when (window-live-p win) (delete-window win)))
+        (kill-buffer buf))
+      (set-marker beg nil)
+      (set-marker end nil)
+      (let ((win (texpresso-view--window)))
+        (when (window-live-p win)
+          (unless noninteractive
+            (select-frame-set-input-focus (window-frame win)))
+          (select-window win))))))
+
+;;; Arranging: several objects selected (shift and a click, or a frame
+;;; dragged around them on an empty spot), moved, formatted, copied and
+;;; deleted together; aligned, spread evenly, centred on the slide; grouped,
+;;; so that a click on one selects them all (a `tv group' key each); and
+;;; guides that a dragged object snaps to: the slide's edges and middle,
+;;; the other objects' edges and middles.
+
+(defun texpresso-view--selection ()
+  "The objects selected, in order: their numbers.
+The others than `texpresso-view--selected' count only while it is the
+one they were selected with."
+  (and texpresso-view--selected
+       (sort (delete-dups (cons texpresso-view--selected
+                                (and (eql (car texpresso-view--also) texpresso-view--selected)
+                                     (copy-sequence (cdr texpresso-view--also)))))
+             #'<)))
+
+(defun texpresso-view--select (ks)
+  "Select the objects KS, the first of them the one the format bar shows."
+  (setq texpresso-view--selected (car ks)
+        texpresso-view--also (and ks (cons (car ks) (cdr ks)))
+        texpresso-view--format-cache nil
+        texpresso-view--toolbar-cache nil))
+
+(defun texpresso-view--extent (box)
+  "BOX's extent on the slide, turned as it is: (LEFT TOP RIGHT BOTTOM)."
+  (pcase-let* ((`(,_ ,_ ,w ,h) box)
+               (points (mapcar (lambda (c) (texpresso-view--global box (car c) (cdr c)))
+                               (list (cons (- (/ w 2.0)) (- (/ h 2.0))) (cons (/ w 2.0) (- (/ h 2.0)))
+                                     (cons (/ w 2.0) (/ h 2.0)) (cons (- (/ w 2.0)) (/ h 2.0))))))
+    (list (apply #'min (mapcar #'car points)) (apply #'min (mapcar #'cdr points))
+          (apply #'max (mapcar #'car points)) (apply #'max (mapcar #'cdr points)))))
+
+(defun texpresso-view--slide-height ()
+  "The slide's height in slide units, 100 being its width."
+  (* 100.0 (/ (float (nth 2 texpresso-view--png)) (nth 1 texpresso-view--png))))
+
+(defun texpresso-view--group-of (k)
+  "The objects grouped with object K, itself included: their numbers."
+  (let* ((statements (texpresso-view--frame-statements))
+         (group (let ((s (nth (1- k) statements))) (and s (texpresso-view--option s "tv group")))))
+    (if (not (stringp group))
+        (list k)
+      (let ((i 0) ks)
+        (dolist (s statements)
+          (setq i (1+ i))
+          (when (equal (texpresso-view--option s "tv group") group)
+            (push i ks)))
+        (nreverse ks)))))
+
+(defun texpresso-view-mouse-down-add (event)
+  "Add the object under the mouse EVENT to those selected, or take it away."
+  (interactive "e")
+  (let* ((at (texpresso-view--event-units event))
+         (hit (and at (texpresso-view--hit (car at) (cdr at)))))
+    (texpresso-view-text-done)
+    (when (and hit (null (cadr hit)))
+      (select-window (posn-window (event-start event)))
+      (let* ((group (texpresso-view--group-of (car hit)))
+             (now (texpresso-view--selection)))
+        (texpresso-view--select
+         (if (memq (car hit) now)
+             (seq-difference now group)
+           (append now group))))
+      (texpresso-view--draw-page))))
+
+(defun texpresso-view--band (event)
+  "Select the objects a frame dragged from the press EVENT touches.
+Nil if the mouse was released without moving: the release is left to
+its command then."
+  (let* ((posn (event-start event))
+         (win (posn-window posn))
+         (xy (posn-x-y posn))
+         (oxy (posn-object-x-y posn))
+         (origin (cons (- (car xy) (car oxy)) (- (cdr xy) (cdr oxy))))
+         (u (texpresso-view--units-per-pixel))
+         (x0 (* (car oxy) u)) (y0 (* (cdr oxy) u))
+         (mouse-fine-grained-tracking t)
+         band ev)
+    (cl-flet ((follow (p)
+                (let ((pxy (posn-x-y p)))
+                  (when (and pxy (eq (posn-window p) win))
+                    (let ((mx (* (- (car pxy) (car origin)) u))
+                          (my (* (- (cdr pxy) (cdr origin)) u)))
+                      (when (or band (> (abs (- mx x0)) 0.5) (> (abs (- my y0)) 0.5))
+                        (setq band (list (min x0 mx) (min y0 my) (abs (- mx x0)) (abs (- my y0))))))))))
+      (unwind-protect
+          (track-mouse
+            (while (mouse-movement-p (setq ev (read-event)))
+              (follow (event-start ev))
+              (when band
+                (setq texpresso-view--band band)
+                (texpresso-view--draw-page))))
+        (setq texpresso-view--band nil))
+      (when (and (consp ev) (memq 'drag (event-modifiers ev)))
+        (follow (event-end ev)))
+      (if (not band)
+          (progn (when ev (push ev unread-command-events)) nil)
+        (pcase-let ((`(,bx ,by ,bw ,bh) band)
+                    (ks nil))
+          (dolist (object (texpresso-view--boxes))
+            (pcase-let ((`(,l ,top ,r ,b) (texpresso-view--extent (cdr object))))
+              (when (and (< l (+ bx bw)) (> r bx) (< top (+ by bh)) (> b by))
+                (setq ks (append ks (texpresso-view--group-of (car object)))))))
+          (texpresso-view--select (delete-dups ks))
+          (texpresso-view--draw-page)
+          t)))))
+
+(defun texpresso-view--move-all (ks dx dy)
+  "Move the objects KS by DX DY slide units."
+  (dolist (statement (mapcar #'texpresso-view--statement ks))
+    (when statement
+      (texpresso-view--shift statement dx dy))))
+
+(defun texpresso-view--guides-for (box others)
+  "Where BOX, moved, snaps to the guides of OTHERS and of the slide.
+OTHERS are extents, as `texpresso-view--extent' gives them.  Returns
+\(DX DY GUIDES): the shift that snaps BOX, and the guides it snaps to,
+\(x . X) or (y . Y)."
+  (pcase-let* ((`(,l ,top ,r ,b) (texpresso-view--extent box))
+               (reach 0.8)
+               (height (texpresso-view--slide-height))
+               (xs (append (list 0 50 100)
+                           (apply #'append (mapcar (lambda (e) (list (nth 0 e) (/ (+ (nth 0 e) (nth 2 e)) 2.0) (nth 2 e)))
+                                                   others))))
+               (ys (append (list 0 (/ height 2) height)
+                           (apply #'append (mapcar (lambda (e) (list (nth 1 e) (/ (+ (nth 1 e) (nth 3 e)) 2.0) (nth 3 e)))
+                                                   others))))
+               (best-x nil) (best-y nil))
+    (dolist (mine (list l (/ (+ l r) 2.0) r))
+      (dolist (x xs)
+        (let ((d (- x mine)))
+          (when (and (< (abs d) reach) (or (null best-x) (< (abs d) (abs (car best-x)))))
+            (setq best-x (cons d x))))))
+    (dolist (mine (list top (/ (+ top b) 2.0) b))
+      (dolist (y ys)
+        (let ((d (- y mine)))
+          (when (and (< (abs d) reach) (or (null best-y) (< (abs d) (abs (car best-y)))))
+            (setq best-y (cons d y))))))
+    (list (if best-x (car best-x) 0) (if best-y (car best-y) 0)
+          (append (and best-x (list (cons 'x (cdr best-x))))
+                  (and best-y (list (cons 'y (cdr best-y))))))))
+
+(defun texpresso-view-align (how)
+  "Align the objects selected HOW: left, center, right, top, middle or bottom.
+Several are aligned with each other; one alone with the slide."
+  (let* ((ks (or (texpresso-view--selection) (user-error "No object selected on the page")))
+         (boxes (texpresso-view--boxes))
+         (extents (mapcar (lambda (k) (cons k (texpresso-view--extent (cdr (assq k boxes))))) ks))
+         (whole (if (cdr ks)
+                    (list (apply #'min (mapcar (lambda (e) (nth 1 e)) extents))
+                          (apply #'min (mapcar (lambda (e) (nth 2 e)) extents))
+                          (apply #'max (mapcar (lambda (e) (nth 3 e)) extents))
+                          (apply #'max (mapcar (lambda (e) (nth 4 e)) extents)))
+                  (list 0 0 100 (texpresso-view--slide-height)))))
+    (dolist (e extents)
+      (pcase-let ((`(,k ,l ,top ,r ,b) e)
+                  (`(,wl ,wt ,wr ,wb) whole))
+        (let ((dx (pcase how
+                    ("left" (- wl l)) ("right" (- wr r))
+                    ("center" (- (/ (+ wl wr) 2.0) (/ (+ l r) 2.0))) (_ 0)))
+              (dy (pcase how
+                    ("top" (- wt top)) ("bottom" (- wb b))
+                    ("middle" (- (/ (+ wt wb) 2.0) (/ (+ top b) 2.0))) (_ 0))))
+          (texpresso-view--move-all (list k) dx dy))))
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view-center-on-slide (across)
+  "Put the objects selected, together, in the middle of the slide.
+With ACROSS `horizontally' or `vertically', in that direction only."
+  (let* ((ks (or (texpresso-view--selection) (user-error "No object selected on the page")))
+         (boxes (texpresso-view--boxes))
+         (extents (mapcar (lambda (k) (texpresso-view--extent (cdr (assq k boxes)))) ks))
+         (l (apply #'min (mapcar #'car extents)))
+         (top (apply #'min (mapcar #'cadr extents)))
+         (r (apply #'max (mapcar #'caddr extents)))
+         (b (apply #'max (mapcar #'cadddr extents)))
+         (dx (if (eq across 'vertically) 0 (- 50 (/ (+ l r) 2.0))))
+         (dy (if (eq across 'horizontally) 0 (- (/ (texpresso-view--slide-height) 2) (/ (+ top b) 2.0)))))
+    (texpresso-view--move-all ks dx dy)
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view-distribute (across)
+  "Spread the objects selected evenly, ACROSS `horizontally' or `vertically'.
+The first and the last stay; the gaps between them become equal."
+  (let* ((ks (texpresso-view--selection))
+         (boxes (texpresso-view--boxes))
+         (h (eq across 'horizontally))
+         (extents (sort (mapcar (lambda (k) (cons k (texpresso-view--extent (cdr (assq k boxes))))) ks)
+                        (lambda (a b) (< (if h (nth 1 a) (nth 2 a)) (if h (nth 1 b) (nth 2 b)))))))
+    (unless (cddr extents)
+      (user-error "Select three objects or more to spread them"))
+    (let* ((lo (lambda (e) (if h (nth 1 e) (nth 2 e))))
+           (hi (lambda (e) (if h (nth 3 e) (nth 4 e))))
+           (sizes (apply #'+ (mapcar (lambda (e) (- (funcall hi e) (funcall lo e))) extents)))
+           (span (- (funcall hi (car (last extents))) (funcall lo (car extents))))
+           (gap (/ (- span sizes) (1- (length extents))))
+           (pos (funcall lo (car extents))))
+      (dolist (e extents)
+        (let ((d (- pos (funcall lo e))))
+          (texpresso-view--move-all (list (car e)) (if h d 0) (if h 0 d)))
+        (setq pos (+ pos (- (funcall hi e) (funcall lo e)) gap))))
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view-group ()
+  "Group the objects selected: a click on one of them selects them all."
+  (interactive)
+  (let ((ks (texpresso-view--selection))
+        (name (format "g%d" (random 100000))))
+    (unless (cdr ks)
+      (user-error "Select two objects or more to group them"))
+    (dolist (statement (mapcar #'texpresso-view--statement ks))
+      (texpresso-view--put-option statement "tv group" name))
+    (setq texpresso-view--format-cache nil)
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view-ungroup ()
+  "Ungroup the objects selected."
+  (interactive)
+  (dolist (statement (mapcar #'texpresso-view--statement (texpresso-view--selection)))
+    (texpresso-view--put-option statement "tv group" nil))
+  (setq texpresso-view--format-cache nil)
+  (texpresso-view--draw-page))
+
+(defun texpresso-view--arrange-items ()
+  "The menu items that arrange the objects selected."
+  (let* ((ks (texpresso-view--selection))
+         (grouped (seq-some (lambda (k) (let ((st (nth (1- k) (texpresso-view--frame-statements))))
+                                          (and st (texpresso-view--option st "tv group"))))
+                            ks)))
+    (cl-flet ((item (name fn &optional on)
+                (vector name (lambda () (interactive) (funcall fn)) (and ks (or on t)))))
+      `(("Align"
+         ,(item "Left" (lambda () (texpresso-view-align "left")))
+         ,(item "Centre" (lambda () (texpresso-view-align "center")))
+         ,(item "Right" (lambda () (texpresso-view-align "right")))
+         "---"
+         ,(item "Top" (lambda () (texpresso-view-align "top")))
+         ,(item "Middle" (lambda () (texpresso-view-align "middle")))
+         ,(item "Bottom" (lambda () (texpresso-view-align "bottom"))))
+        ("Centre on the slide"
+         ,(item "Both ways" (lambda () (texpresso-view-center-on-slide nil)))
+         ,(item "Horizontally" (lambda () (texpresso-view-center-on-slide 'horizontally)))
+         ,(item "Vertically" (lambda () (texpresso-view-center-on-slide 'vertically))))
+        ("Spread evenly"
+         ,(item "Horizontally" (lambda () (texpresso-view-distribute 'horizontally)) (cddr ks))
+         ,(item "Vertically" (lambda () (texpresso-view-distribute 'vertically)) (cddr ks)))
+        ("Order"
+         ,(item "Bring to front" #'texpresso-view-bring-to-front)
+         ,(item "Send to back" #'texpresso-view-send-to-back))
+        ,(item "Group" #'texpresso-view-group (cdr ks))
+        ,(item "Ungroup" #'texpresso-view-ungroup grouped)))))
+
+(defun texpresso-view-arrange-menu (event)
+  "The format bar's arrange menu, at the click EVENT."
+  (interactive "e")
+  (popup-menu (easy-menu-create-menu "Arrange" (texpresso-view--arrange-items)) event))
+
 
 ;;; The slide strip, as Google Slides has on the left: the deck's frames in
 ;;; order, in the files it \inputs too, each with a small picture of its
@@ -3233,6 +4521,14 @@ the map a running Emacs already has."
   (define-key map (kbd "s") #'texpresso-view-slides)
   (define-key map [down-mouse-3] #'texpresso-view-context-menu)
   (define-key map [mouse-3] #'ignore)
+  ;; shift and a click adds to the objects selected; on a slide a drag on an
+  ;; empty spot frames objects, so Meta and a drag copies the page's text there
+  (define-key map [S-down-mouse-1] #'texpresso-view-mouse-down-add)
+  (define-key map [S-mouse-1] #'ignore)
+  (define-key map [S-drag-mouse-1] #'ignore)
+  (define-key map [M-down-mouse-1] #'ignore)
+  (define-key map [M-mouse-1] #'texpresso-view-click)
+  (define-key map [M-drag-mouse-1] #'texpresso-view-select)
   map)
 
 (defvar texpresso-view-mode-map (make-sparse-keymap)
@@ -3249,6 +4545,15 @@ the map a running Emacs already has."
      ["From your computer…" texpresso-view-insert-image t]
      ["Recent pictures…" texpresso-view-pictures t]
      ["Paste from the clipboard" texpresso-view-paste-image t])
+    ("Shape" :filter (lambda (_) (texpresso-view--shape-items)))
+    ("Line" :filter (lambda (_) (texpresso-view--line-items)))
+    "---"
+    ["Edit text" texpresso-view-edit-text texpresso-view--selected]
+    ["Rotate left" texpresso-view-rotate-left texpresso-view--selected]
+    ["Rotate right" texpresso-view-rotate-right texpresso-view--selected]
+    ["Bold" texpresso-view-toggle-bold texpresso-view--selected]
+    ["Italic" texpresso-view-toggle-italic texpresso-view--selected]
+    ("Arrange" :filter (lambda (_) (texpresso-view--arrange-items)))
     "---"
     ["Undo" texpresso-view-undo t]
     ["Redo" texpresso-view-redo t]
@@ -3503,7 +4808,14 @@ lock, auto-save and backup files are left out."
         texpresso-view--waiting nil
         texpresso-view--frame-start nil
         texpresso-view--deck nil
-        texpresso-view--toolbar-cache nil)
+        texpresso-view--toolbar-cache nil
+        texpresso-view--format-cache nil
+        texpresso-view--palette nil
+        texpresso-view--also nil
+        texpresso-view--outlines nil
+        texpresso-view--band nil
+        texpresso-view--guides nil)
+  (texpresso-view-text-done)
   (texpresso-view-pictures-close)
   (message "TeXpresso view closed"))
 
