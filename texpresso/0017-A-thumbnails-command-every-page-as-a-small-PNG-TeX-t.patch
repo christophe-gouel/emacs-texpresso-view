@@ -1,7 +1,7 @@
 From 8804892f735173086010a7ac5450ae4b6c8a7dcd Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 00:33:24 +0100
-Subject: [PATCH 17/18] A thumbnails command: every page as a small PNG, TeX
+Subject: [PATCH 17/19] A thumbnails command: every page as a small PNG, TeX
  typesetting to the end meanwhile
 
 (thumbnails DIR WIDTH HEIGHT) writes each page typeset as DIR/page-N.png,

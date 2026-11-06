@@ -1,0 +1,114 @@
+From df9c0a62e333d2c4d9753e1791e65a76044037f1 Mon Sep 17 00:00:00 2001
+From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
+Date: Fri, 6 Nov 2026 06:23:42 +0100
+Subject: [PATCH 19/19] A picture TeX found in the TeX tree is drawn, not only
+ one beside the document
+
+\includegraphics{example-image-a.png} with mwe's picture in the TeX tree
+and none beside the document: XeTeX found it and typeset the page, but
+the renderer said "[dvi] error while loading: cannot open
+example-image-a.png" and drew no picture. With example-image-a.pdf,
+XeTeX itself said "Unable to load picture or PDF file", and graphics
+"Division by 0".
+
+The renderer opened an image by its name in the document's folder
+(fz_new_image_from_file, from the folder the driver changed to), and a
+PDF by the document's folder and its name. Both now go through the
+resource hooks, which look in the TeX tree (texlive_file_path, or
+tectonic_get_file_path with Tectonic) when the file is not beside the
+document.
+
+In the engine, a file from the TeX tree is a plain FILE (id -1), and
+ttstub_input_seek returned fseek's 0 for it, where every other handle
+returns the new position. dpx's PDF parser reads that value as the
+position (startxref is searched from the end of the file), so a PDF
+from the TeX tree failed to parse ("Error while parsing PDF file"). It
+now returns the position, as ftell gives it.
+---
+ src/dvi/dvi_resmanager.c | 32 +++++++++++++++++++++++++++++++-
+ src/engine/main/main.c   |  4 +++-
+ 2 files changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/src/dvi/dvi_resmanager.c b/src/dvi/dvi_resmanager.c
+index d24732b..aefda12 100644
+--- a/src/dvi/dvi_resmanager.c
++++ b/src/dvi/dvi_resmanager.c
+@@ -136,6 +136,15 @@ tectonic_hooks_open_file(fz_context *ctx, void *env, dvi_reskind kind, const cha
+         else
+           memcpy(path + root_len, name, name_len);
+         path[len] = 0;
++
++        // Not beside the document: a picture TeX found in the TeX tree
++        const char *tree_path;
++        if (access(path, R_OK) != 0 && (tree_path = tectonic_get_file_path(name)))
++        {
++          free(path);
++          free_path = 0;
++          path = (char*)tree_path;
++        }
+       }
+       break;
+ 
+@@ -278,6 +287,15 @@ texlive_hooks_open_file(fz_context *ctx, void *env, dvi_reskind kind, const char
+         else
+           memcpy(path + root_len, name, name_len);
+         path[len] = 0;
++
++        // Not beside the document: a picture TeX found in the TeX tree
++        const char *tree_path;
++        if (access(path, R_OK) != 0 && (tree_path = texlive_file_path(name, NULL)))
++        {
++          free(path);
++          free_path = 0;
++          path = (char*)tree_path;
++        }
+       }
+       break;
+ 
+@@ -834,6 +852,8 @@ fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char
+ 
+   fz_ptr(cell_image, cell);
+   fz_ptr(char, pname);
++  fz_ptr(fz_stream, stm);
++  fz_ptr(fz_buffer, buf);
+ 
+   fz_try(ctx)
+   {
+@@ -841,7 +861,17 @@ fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char
+     pname = fz_strdup(ctx, filename);
+     cell->name = pname;
+     cell->next = rm->first_image;
+-    cell->img = fz_new_image_from_file(ctx, filename);
++    // Found as a PDF is: beside the document, else in the TeX tree
++    stm = dvi_resmanager_open_file(ctx, rm, RES_PDF, pname);
++    if (!stm)
++      fz_throw(ctx, FZ_ERROR_GENERIC, "cannot open %s", pname);
++    buf = fz_read_all(ctx, stm, 0);
++    cell->img = fz_new_image_from_buffer(ctx, buf);
++  }
++  fz_always(ctx)
++  {
++    fz_drop_buffer(ctx, buf);
++    fz_drop_stream(ctx, stm);
+   }
+   fz_catch(ctx)
+   {
+diff --git a/src/engine/main/main.c b/src/engine/main/main.c
+index 8ccdbb8..da2aa9b 100644
+--- a/src/engine/main/main.c
++++ b/src/engine/main/main.c
+@@ -465,8 +465,10 @@ size_t ttstub_input_seek(ttbc_input_handle_t *handle,
+   if (texpresso)
+   {
+     txp_input *input = input_as_txp(handle);
++    // A file from the TeX tree: the new position, as below, not fseek's 0
++    // (dpx's PDF parser reads it as the position)
+     if (input->id == -1)
+-      return fseek(input->file, offset, whence);
++      return fseek(input->file, offset, whence) == 0 ? ftell(input->file) : -1;
+ 
+     int ofs = offset;
+     if (whence == SEEK_CUR)
+-- 
+2.56.0
+

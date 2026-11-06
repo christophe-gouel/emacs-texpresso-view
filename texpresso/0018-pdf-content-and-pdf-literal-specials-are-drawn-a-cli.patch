@@ -1,7 +1,7 @@
 From 50fdc94decd6725adece2877c868bcb02e95c582 Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 06:07:30 +0100
-Subject: [PATCH 18/18] pdf:content and pdf:literal specials are drawn; a clip
+Subject: [PATCH 18/19] pdf:content and pdf:literal specials are drawn; a clip
  left open no longer kills TeXpresso
 
 trimclip's XeTeX driver (adjustbox's clip) clips a box with

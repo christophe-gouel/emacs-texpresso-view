@@ -299,6 +299,7 @@ what this package needs; the others fix bugs found while using it every day.
 | 0016 | Texinfo files are typeset with plain XeTeX's format instead of LaTeX's |
 | 0017 | A `thumbnails` command: every page as a small PNG for the slide strip, TeX typesetting to the end meanwhile |
 | 0018 | A picture clipped with adjustbox's `clip` is drawn clipped, and no longer kills TeXpresso; a clip a page never closes is closed at its end |
+| 0019 | A picture found in the TeX tree (texmf), not beside the document, is drawn: a PNG or JPEG was left out of the page, a PDF gave TeX an error |
 
 ## Notes and limitations
 
