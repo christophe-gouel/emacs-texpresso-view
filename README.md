@@ -298,6 +298,7 @@ what this package needs; the others fix bugs found while using it every day.
 | 0013, 0014, 0015 | Cleanup: snapshots end with TeXpresso, finished TeX runs are reaped, a cache loop fixed |
 | 0016 | Texinfo files are typeset with plain XeTeX's format instead of LaTeX's |
 | 0017 | A `thumbnails` command: every page as a small PNG for the slide strip, TeX typesetting to the end meanwhile |
+| 0018 | A picture clipped with adjustbox's `clip` is drawn clipped, and no longer kills TeXpresso; a clip a page never closes is closed at its end |
 
 ## Notes and limitations
 
