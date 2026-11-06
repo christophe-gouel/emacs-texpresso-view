@@ -73,7 +73,9 @@
 ;; and makes them appear at a later click; a dragged object snaps to
 ;; guides; over a handle the pointer shows which way it drags.  Text gets
 ;; a font, underline, strikethrough, lists and line spacing; objects a flip
-;; and a drop shadow; sixteen shapes come from the Shape menu.  A picture
+;; and a drop shadow; sixteen shapes come from the Shape menu.  Objects
+;; come in with an animation; a slide gets a background of its own and
+;; speaker notes, typed in a window under it.  A picture
 ;; is cropped by its handles (a double click), all of it shown faded, and
 ;; tables come from the Shape menu.  The slide menu gives a slide a transition, the deck a theme,
 ;; skips a slide, and presents the deck (F5).  s opens the slide strip on the left
@@ -1237,7 +1239,8 @@ the page's window.")
     (when (and turn (= page (car turn)))
       (setq texpresso-view--turn nil)
       (when (and source (< (- (float-time) (cdr turn)) 2))
-        (texpresso-view--show-source source line)))))
+        (texpresso-view--show-source source line))))
+  (texpresso-view--notes-refresh))
 
 (defun texpresso-view--page-start (pos)
   "Where the page whose source starts at POS begins: a frame's \\begin{frame}.
@@ -2916,7 +2919,8 @@ and drawn over what comes before it.")
   "The bar MAKE makes, made again narrow if it is wider than the page's window."
   (let ((bar (funcall make))
         (win (texpresso-view--window)))
-    (if (and win (> (string-pixel-width bar) (window-pixel-width win)))
+    (if (and win (display-graphic-p (window-frame win))
+             (> (string-pixel-width bar) (window-pixel-width win)))
         (let ((texpresso-view--compact t))
           (funcall make))
       bar)))
@@ -3063,6 +3067,7 @@ out and makes it do nothing; ACTIVE shows it pressed.  In a narrow bar
       ["Edit text" texpresso-view-edit-text ,on]
       ["Crop" texpresso-view-crop ,on]
       ["Show all of the picture" texpresso-view-uncrop ,on]
+      ["Replace the picture…" texpresso-view-replace-picture ,on]
       ["Edit in the source" texpresso-view-edit-object ,on])))
 
 (defun texpresso-view-picture-menu (event)
@@ -3095,6 +3100,7 @@ spot is where a new object goes, and the menu inserts one."
       (if hit
           (texpresso-view--object-items)
         `(["Paste" texpresso-view-paste t]
+          ["Select all" texpresso-view-select-all t]
           ["Text box" texpresso-view-add-text t]
           ("Picture" ,@(texpresso-view--picture-items))
           ("Shape" ,@(texpresso-view--shape-items))
@@ -3879,7 +3885,11 @@ FN gets the value picked."
     (interactive)
     (let ((target texpresso-view--palette))
       (setq texpresso-view--palette nil)
-      (texpresso-view-set-color target color))))
+      (if (not (eq target 'background))
+          (texpresso-view-set-color target color)
+        (texpresso-view-set-background color)
+        (setq texpresso-view--format-cache nil)
+        (force-mode-line-update t)))))
 
 (defun texpresso-view-palette-cancel ()
   "Close the palette, the colour as it was."
@@ -3909,6 +3919,7 @@ FN gets the value picked."
   "The palette, in the format bar's place."
   (concat (propertize (format " %s: " (pcase texpresso-view--palette
                                         ('fill "Fill") ('border "Border") ('text "Text colour")
+                                        ('background "Background")
                                         (_ "Line colour")))
                       'face 'bold)
           (unless (memq texpresso-view--palette '(text line))
@@ -4501,6 +4512,7 @@ The first and the last stay; the gaps between them become equal."
          ,(item "Bring to front" #'texpresso-view-bring-to-front)
          ,(item "Send to back" #'texpresso-view-send-to-back))
         ("Appear" ,@(texpresso-view--appear-items))
+        ("Animation" ,@(texpresso-view--effect-items))
         ("Rotate"
          ,(item "A quarter to the left" #'texpresso-view-rotate-left)
          ,(item "A quarter to the right" #'texpresso-view-rotate-right)
@@ -4536,26 +4548,51 @@ It runs in the root file's folder, and the PDF is taken next to it."
   :type 'string
   :group 'tex)
 
-(defcustom texpresso-view-present-viewer "zathura --mode=presentation --page=%p %f"
-  "The command that shows the deck's PDF full screen.
-%f is the PDF, %p the page to start from."
-  :type 'string
+(defcustom texpresso-view-present-viewer nil
+  "The command that shows the deck's PDF full screen; nil picks one.
+%f is the PDF, %p the page to start from.  Nil: pdfpc where it is
+installed (a presenter view: the next slide, a clock), else Evince, which
+plays transitions and animations, else zathura."
+  :type '(choice (const :tag "Pick one" nil) string)
   :group 'tex)
+
+(defun texpresso-view--present-viewer ()
+  "The command that shows the deck's PDF full screen: the user's, or one picked."
+  (or texpresso-view-present-viewer
+      (cond ((executable-find "pdfpc") "pdfpc --page=%p %f")
+            ((executable-find "evince") "evince --presentation --page-index=%p %f")
+            (t "zathura --mode=presentation --page=%p %f"))))
+
+(defconst texpresso-view--notes-pretex
+  "\\AddToHook{class/beamer/after}{\\usepackage{pgfpages}\\setbeameroption{show notes on second screen=right}}"
+  "What makes Beamer put each slide's notes on a second screen, to the right.")
 
 (defconst texpresso-view-present-buffer-name "*texpresso-view present*"
   "The buffer of the command making the PDF to present.")
 
-(defun texpresso-view-present ()
+(defun texpresso-view-present-with-notes ()
+  "Present the deck from the slide on display, the speaker notes on the laptop.
+It needs pdfpc: the slides go to the projector, the notes, the next
+slide and a clock to the speaker."
+  (interactive)
+  (unless (executable-find "pdfpc")
+    (user-error "Presenting with notes needs pdfpc, which is not installed"))
+  (texpresso-view-present t))
+
+(defun texpresso-view-present (&optional notes)
   "Present the deck full screen, from the slide on display.
 The deck's files are saved first (each one asked), then the PDF is made
 with `texpresso-view-present-command' and shown with
-`texpresso-view-present-viewer'."
+`texpresso-view-present-viewer'.  With NOTES, a PDF with each slide's
+notes on its right half is made beside it, ROOT-notes.pdf, and shown by
+pdfpc, the notes to the speaker alone."
   (interactive)
   (unless texpresso-view--root
     (user-error "No TeXpresso view open"))
   (let* ((root texpresso-view--root)
          (dir (file-name-directory root))
-         (pdf (concat (file-name-sans-extension root) ".pdf"))
+         (base (file-name-base root))
+         (pdf (concat (file-name-sans-extension root) (if notes "-notes" "") ".pdf"))
          (page (1+ (or texpresso-view--page 0)))
          (start (current-time))
          (default-directory dir)
@@ -4570,8 +4607,13 @@ with `texpresso-view-present-command' and shown with
      :name "texpresso-view-present"
      :buffer log
      :command (list shell-file-name shell-command-switch
-                    (format texpresso-view-present-command
-                            (shell-quote-argument (file-name-nondirectory root))))
+                    (if notes
+                        (format "latexmk -pdf -interaction=nonstopmode -jobname=%s -usepretex=%s %s"
+                                (shell-quote-argument (concat base "-notes"))
+                                (shell-quote-argument texpresso-view--notes-pretex)
+                                (shell-quote-argument (file-name-nondirectory root)))
+                      (format texpresso-view-present-command
+                              (shell-quote-argument (file-name-nondirectory root)))))
      :sentinel
      (lambda (process _event)
        (when (memq (process-status process) '(exit signal))
@@ -4583,7 +4625,8 @@ with `texpresso-view-present-command' and shown with
                (message "Presenting %s from page %d" (file-name-nondirectory pdf) page)
                (start-process-shell-command
                 "texpresso-view-viewer" nil
-                (format-spec texpresso-view-present-viewer
+                (format-spec (if notes "pdfpc --notes=right --page=%p %f"
+                               (texpresso-view--present-viewer))
                              `((?f . ,(shell-quote-argument pdf)) (?p . ,page)))))
            (message "The PDF could not be made: see the buffer %s" (buffer-name log))))))))
 
@@ -4637,7 +4680,8 @@ It is a line right after the frame's first."
     (with-current-buffer buf
       (save-excursion
         (goto-char beg)
-        (if (re-search-forward "^[ \t]*\\\\trans[a-z]+\\(?:<[^>\n]*>\\)?\\(?:\\[[^]\n]*\\]\\)?[ \t]*\n" end t)
+        ;; the slide's own: a step's has <N> after it (an object's effect)
+        (if (re-search-forward "^[ \t]*\\\\trans[a-z]+\\(?:\\[[^]\n]*\\]\\)?[ \t]*\n" end t)
             (replace-match (if command (concat "  " command "\n") "") t t)
           (when command
             (goto-char beg)
@@ -4722,6 +4766,305 @@ Each step is a click of the presentation, a page of the deck."
                     'texpresso-view--selected))
           '(1 2 3 4 5 6)))
 
+;;; A slide's own background: a colour or a picture, a \tvbackground line
+;;; in its frame, which the preamble block draws in Beamer's background
+;;; canvas; the theme's for the other slides.
+
+(defconst texpresso-view--background-regexp
+  "^[ \t]*\\\\tvbackground\\(?:\\[[^]\n]*\\]\\)?{[^}\n]*}[ \t]*\n"
+  "A slide's own background, its line in the frame.")
+
+(defun texpresso-view--set-frame-line (re line)
+  "Make the slide on display's line matching RE be LINE, or add LINE.
+LINE goes right after the frame's first line; nil takes the line away."
+  (pcase-let ((`(,buf ,beg ,end) (or (texpresso-view--frame)
+                                     (user-error "No frame found in the source for this slide"))))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char beg)
+        (if (re-search-forward re end t)
+            (replace-match (if line (concat "  " line "\n") "") t t)
+          (when line
+            (goto-char beg)
+            (forward-line 1)
+            (insert "  " line "\n")))))))
+
+(defun texpresso-view-set-background (color &optional picture)
+  "Give the slide on display the background COLOR, an xcolor expression.
+With PICTURE, a file, that picture stretched over the slide instead.
+Neither: the theme's background again."
+  (texpresso-view--frame-marker)
+  (when (or color picture)
+    (texpresso-view--ensure-preamble))
+  (texpresso-view--set-frame-line
+   texpresso-view--background-regexp
+   (cond (picture (format "\\tvbackground[picture]{%s}"
+                          (texpresso-view--image-path (expand-file-name picture))))
+         (color (format "\\tvbackground{%s}" color)))))
+
+(defun texpresso-view-background-colour ()
+  "Pick the slide's background colour in the format bar's palette."
+  (interactive)
+  (setq texpresso-view--palette 'background
+        texpresso-view--format-cache nil)
+  (force-mode-line-update t))
+
+(defun texpresso-view-background-picture (file)
+  "Stretch the picture FILE over the slide on display, as its background."
+  (interactive
+   (list (read-file-name "Background picture: " nil nil t nil
+                         (lambda (f) (or (file-directory-p f)
+                                         (string-match-p texpresso-view--image-regexp (downcase f)))))))
+  (texpresso-view-set-background nil file))
+
+(defun texpresso-view--background-items ()
+  "The menu items that give the slide on display its background."
+  '(["The theme's" (lambda () (interactive) (texpresso-view-set-background nil)) t]
+    ["A colour…" texpresso-view-background-colour t]
+    ["A picture…" texpresso-view-background-picture t]))
+
+;;; Speaker notes, as under a Google Slides slide: a window under the page
+;;; shows the slide's \note{…}, and what is typed there goes into it (a
+;;; \note is made before \end{frame} at the first letter).  Beamer leaves
+;;; notes out of the slides; presenting with notes shows them to the
+;;; speaker alone (`texpresso-view-present-with-notes').
+
+(defconst texpresso-view-notes-buffer-name "*Speaker notes*"
+  "The buffer of the slide's speaker notes.")
+
+(defvar-local texpresso-view--notes-target nil
+  "The frame whose notes this buffer holds: a marker at its \\begin{frame}.")
+
+(defun texpresso-view--note-region (buf beg end)
+  "Where the text of the first \\note{…} between BEG and END of BUF is.
+Returns (FROM . TO), or nil."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char beg)
+      (when (re-search-forward "\\\\note[ \t]*{" end t)
+        (let ((close (texpresso-view--group-end (1- (point)) ?\{ ?\})))
+          (and close (<= close end) (cons (point) (1- close))))))))
+
+(defun texpresso-view--frame-at (start)
+  "The frame whose \\begin{frame} is at the marker START: (BUFFER BEG END)."
+  (let ((buf (marker-buffer start)))
+    (when buf
+      (with-current-buffer buf
+        (save-excursion
+          (goto-char start)
+          (when (and (looking-at "\\\\begin{frame}")
+                     (re-search-forward "^[ \t]*\\\\end{frame}" nil t))
+            (list buf (marker-position start) (point))))))))
+
+(define-derived-mode texpresso-view-notes-mode text-mode "Notes"
+  "The speaker notes of the slide on display.
+What is typed goes into the slide's \\note{…} in the source at once."
+  (setq-local mode-line-format nil)
+  (setq-local header-line-format
+              (propertize " Speaker notes: they go into the slide's \\note, for you alone"
+                          'face 'shadow))
+  (add-hook 'after-change-functions #'texpresso-view--notes-changed nil t))
+
+(defun texpresso-view--notes-changed (&rest _)
+  "Put the notes typed into the \\note of the slide they belong to.
+As with the text typed on the slide, the source's change hooks run, so
+that texpresso.el sends TeXpresso the change."
+  (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+        (frame (and texpresso-view--notes-target
+                    (texpresso-view--frame-at texpresso-view--notes-target)))
+        (inhibit-modification-hooks nil))
+    (when frame
+      (pcase-let ((`(,buf ,beg ,end) frame))
+        (with-current-buffer buf
+          (save-excursion
+            (let ((region (texpresso-view--note-region buf beg end)))
+              (cond
+               (region
+                (unless (equal text (buffer-substring-no-properties (car region) (cdr region)))
+                  (goto-char (car region))
+                  (delete-region (car region) (cdr region))
+                  (insert text)))
+               ((not (string-empty-p text))
+                (goto-char end)
+                (goto-char (line-beginning-position))
+                (insert "  \\note{" text "}\n"))))))))))
+
+(defun texpresso-view--notes-window ()
+  "The window showing the speaker notes, or nil."
+  (let ((buf (get-buffer texpresso-view-notes-buffer-name)))
+    (and buf (get-buffer-window buf t))))
+
+(defun texpresso-view--notes-refresh ()
+  "Show the notes of the slide on display in the notes window, if it is open.
+Nothing changes while they are the same slide's."
+  (let* ((win (texpresso-view--notes-window))
+         (start (and win (texpresso-view--frame-marker))))
+    (when win
+      (with-current-buffer (window-buffer win)
+        (unless (and texpresso-view--notes-target start
+                     (eq (marker-buffer texpresso-view--notes-target) (marker-buffer start))
+                     (= texpresso-view--notes-target start))
+          (let ((frame (and start (texpresso-view--frame-at start)))
+                (inhibit-modification-hooks t))
+            (setq texpresso-view--notes-target (and frame (copy-marker start)))
+            (erase-buffer)
+            (when frame
+              (let ((region (apply #'texpresso-view--note-region frame)))
+                (when region
+                  (insert (with-current-buffer (car frame)
+                            (buffer-substring-no-properties (car region) (cdr region)))))))
+            (goto-char (point-max))
+            (setq buffer-read-only (not frame))))))))
+
+(defun texpresso-view-notes ()
+  "Open the speaker notes of the slide on display under it, or close them."
+  (interactive)
+  (let ((win (texpresso-view--notes-window)))
+    (if win
+        (delete-window win)
+      (let ((page (or (texpresso-view--window) (user-error "No TeXpresso view open")))
+            (buf (get-buffer-create texpresso-view-notes-buffer-name)))
+        (with-current-buffer buf
+          (unless (derived-mode-p 'texpresso-view-notes-mode)
+            (texpresso-view-notes-mode))
+          (setq texpresso-view--notes-target nil))
+        (let ((notes (split-window page (- (* 6 (frame-char-height (window-frame page)))) 'below t)))
+          (set-window-buffer notes buf)
+          (set-window-dedicated-p notes t)
+          (texpresso-view--notes-refresh)
+          (select-window notes))))))
+
+;;; Animations: an object appearing at a later step comes in with an
+;;; effect, the transition of its step's page (\transfade<3>, a line of
+;;; the frame marked "% tv step"): the rest of the page being the same,
+;;; only the object fades or flies in.  Viewers that play PDF transitions
+;;; show it (Evince, pdfpc).
+
+(defconst texpresso-view-effects
+  '(("Appear" . nil) ("Fade in" . "fade") ("Fly in from the left" . "fly-left")
+    ("Fly in from the right" . "fly-right") ("Fly in from the top" . "fly-top")
+    ("Fly in from the bottom" . "fly-bottom") ("Wipe in" . "wipe") ("Dissolve in" . "dissolve")
+    ("Zoom in" . "zoom"))
+  "The ways an object comes in at its step: (NAME . TV-EFFECT).")
+
+(defun texpresso-view--effect-command (effect step)
+  "Beamer's transition for EFFECT at STEP, as a line of the frame, or nil."
+  (let ((tr (pcase effect
+              ("fade" "\\transfade<%d>")
+              ("fly-left" "\\transcover<%d>[direction=0]")
+              ("fly-right" "\\transcover<%d>[direction=180]")
+              ("fly-top" "\\transcover<%d>[direction=270]")
+              ("fly-bottom" "\\transcover<%d>[direction=90]")
+              ("wipe" "\\transwipe<%d>[direction=0]")
+              ("dissolve" "\\transdissolve<%d>")
+              ("zoom" "\\transboxout<%d>"))))
+    (and tr (concat (format tr step) "% tv step"))))
+
+(defun texpresso-view--update-effects ()
+  "Write the transitions of the steps of the slide on display, from its effects."
+  (pcase-let ((`(,buf ,beg ,_) (texpresso-view--frame)))
+    (when buf
+      (let (lines)
+        (dolist (s (texpresso-view--frame-statements))
+          (let ((step (texpresso-view--option s "tv appear"))
+                (effect (texpresso-view--option s "tv effect")))
+            (when (and (stringp step) (stringp effect))
+              (let ((line (texpresso-view--effect-command effect (string-to-number step))))
+                (when line
+                  (setf (alist-get (string-to-number step) lines) line))))))
+        (with-current-buffer buf
+          (save-excursion
+            (let ((end (save-excursion (goto-char beg)
+                                       (re-search-forward "^[ \t]*\\\\end{frame}" nil t))))
+              (goto-char beg)
+              (while (re-search-forward "^[ \t]*\\\\trans[a-z]+<[0-9]+>[^\n]*% tv step\n" end t)
+                (setq end (- end (- (match-end 0) (match-beginning 0))))
+                (replace-match "" t t)))
+            (goto-char beg)
+            (forward-line 1)
+            (dolist (l (sort lines (lambda (a b) (< (car a) (car b)))))
+              (insert "  " (cdr l) "\n"))))))))
+
+(defun texpresso-view-set-effect (effect)
+  "Make the objects selected come in with EFFECT, a `tv effect'; nil: appear.
+One that comes with the slide is made to come at the next click."
+  (let* ((statements (texpresso-view--frame-statements))
+         (last (apply #'max 1 (mapcar (lambda (s)
+                                        (let ((v (texpresso-view--option s "tv appear")))
+                                          (if (stringp v) (string-to-number v) 1)))
+                                      statements))))
+    (texpresso-view--format
+     (lambda (statement _kind)
+       (texpresso-view--put-option statement "tv effect" effect)
+       (when (and effect (not (stringp (texpresso-view--option statement "tv appear"))))
+         (texpresso-view--put-option statement "tv appear" (number-to-string (1+ last))))))
+    (texpresso-view--update-steps)
+    (texpresso-view--update-effects)))
+
+(defun texpresso-view--effect-items ()
+  "The menu items that give the objects selected their effect."
+  (let* ((statement (and texpresso-view--selected (texpresso-view--selected-statement)))
+         (now (and statement (texpresso-view--option statement "tv effect"))))
+    (mapcar (lambda (e)
+              (vector (car e) (lambda () (interactive) (texpresso-view-set-effect (cdr e)))
+                      :style 'radio :selected (equal now (cdr e)) :active 'texpresso-view--selected))
+            texpresso-view-effects)))
+
+;;; More of Google Slides: selecting every object, replacing a picture,
+;;; the slide's size.
+
+(defun texpresso-view-select-all ()
+  "Select every object of the slide on display."
+  (interactive)
+  (texpresso-view--select (mapcar #'car (texpresso-view--boxes)))
+  (texpresso-view--draw-page))
+
+(defun texpresso-view-replace-picture (file)
+  "Put the picture FILE in the place of the picture selected.
+Its size and crop are kept."
+  (interactive
+   (list (read-file-name "Replace with: " nil nil t nil
+                         (lambda (f) (or (file-directory-p f)
+                                         (string-match-p texpresso-view--image-regexp (downcase f)))))))
+  (let ((statement (texpresso-view--selected-statement))
+        (path (texpresso-view--image-path (expand-file-name file))))
+    (unless (eq (texpresso-view--kind statement) 'picture)
+      (user-error "Only a picture can be replaced"))
+    (pcase-let ((`(,buf ,beg ,end) statement))
+      (with-current-buffer buf
+        (save-excursion
+          (goto-char beg)
+          (when (re-search-forward "\\\\includegraphics\\(?:\\[[^]]*\\]\\)?{\\([^}]+\\)}" end t)
+            (replace-match path t t nil 1)))))
+    (texpresso-view--draw-page)))
+
+(defconst texpresso-view-aspect-ratios
+  '(("16:9" . "169") ("16:10" . "1610") ("4:3" . "43") ("3:2" . "32") ("5:4" . "54")
+    ("14:9" . "149") ("A4" . "141"))
+  "The slide sizes Beamer offers: (NAME . ASPECTRATIO).")
+
+(defun texpresso-view-set-aspect-ratio (ratio)
+  "Make the deck's slides RATIO wide for their height, Beamer's aspectratio.
+RATIO is as \"169\".  What is placed with the mouse keeps its share of the width."
+  (with-current-buffer (texpresso-view--root-buffer)
+    (save-excursion
+      (goto-char (point-min))
+      (unless (re-search-forward "^[ \t]*\\\\documentclass\\(\\[\\([^]]*\\)\\]\\)?[ \t]*{beamer}" nil t)
+        (user-error "No \\documentclass{beamer} in %s" (file-name-nondirectory texpresso-view--root)))
+      (let ((options (match-string 2))
+            (from (match-beginning 2))
+            (to (match-end 2))
+            (new (format "aspectratio=%s" ratio)))
+        (if (null options)
+            (progn (goto-char (match-beginning 0))
+                   (search-forward "\\documentclass")
+                   (insert "[" new "]"))
+          (delete-region from to)
+          (goto-char from)
+          (insert (if (string-match-p "aspectratio=[0-9]+" options)
+                      (replace-regexp-in-string "aspectratio=[0-9]+" new options t t)
+                    (concat options "," new))))))))
+
 (defun texpresso-view--deck-items ()
   "The menu items about the deck: transition, theme, colours, presenting."
   `(("Transition"
@@ -4733,9 +5076,15 @@ Each step is a click of the presentation, a page of the deck."
     ("Colours"
      ,@(mapcar (lambda (th) (vector th (lambda () (interactive) (texpresso-view-set-color-theme th)) t))
                texpresso-view-color-themes))
+    ("Background" ,@(texpresso-view--background-items))
+    ("Slide size"
+     ,@(mapcar (lambda (r) (vector (car r) (lambda () (interactive) (texpresso-view-set-aspect-ratio (cdr r))) t))
+               texpresso-view-aspect-ratios))
+    ["Speaker notes" texpresso-view-notes t]
     ["Skip this slide" texpresso-view-skip-slide t]
     "---"
-    ["Present from this slide" texpresso-view-present t]))
+    ["Present from this slide" texpresso-view-present t]
+    ["Present with speaker notes" texpresso-view-present-with-notes (executable-find "pdfpc")]))
 
 (defun texpresso-view-slides-context-menu (event)
   "The menu of the strip's slide right-clicked in EVENT."
@@ -5707,6 +6056,8 @@ lock, auto-save and backup files are left out."
   (texpresso-view--unwatch)
   (let ((strip (texpresso-view--strip-window)))
     (when strip (delete-window strip)))
+  (let ((notes (texpresso-view--notes-window)))
+    (when notes (delete-window notes)))
   (texpresso-view--thumbs-stop)
   (when (get-buffer texpresso-view-slides-buffer-name)
     (kill-buffer texpresso-view-slides-buffer-name))

@@ -139,8 +139,8 @@ Everything is done with the mouse:
   written as xcolor expressions (`red!40`, `blue!60!black`). In a narrow window both bars keep their icons and drop
   their words.
 - **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
-  size, rotate, edit its text, edit in the source. On an empty spot: paste, a text box, a picture, a shape or
-  a line there, and the slide's commands.
+  size, rotate, edit its text, replace a picture by another (its size and crop kept), edit in the source. On
+  an empty spot: paste, select all, a text box, a picture, a shape or a line there, and the slide's commands.
 - **Flipping**: Arrange ▾ → Rotate → Flip mirrors a picture (`\reflectbox`, or `\tvflipv` upside down), turns
   a line's ends across, and points an arrow the other way or a triangle down.
 - **Arranging**: shift and a click adds an object to those selected, and a frame dragged from an empty spot
@@ -160,12 +160,22 @@ Everything is done with the mouse:
   a double click opens.
 - **Appearing on a click**: Arrange ▾ → Appear puts an object in at a later click of the presentation (Beamer
   makes a page for each step: `tv appear=2`, and the layer's `\begin{tvlayer}[2]`).
+- **Animations**: Arrange ▾ → Animation makes it come in fading, flying in from a side, wiping, dissolving or
+  zooming (`tv effect=fade`; one that came with the slide comes at the next click). It is the transition of its
+  step's page, a line of the frame such as `\transfade<2>% tv step`: the rest of the page staying the same, only
+  the object moves. Viewers that play PDF transitions show it: Evince and pdfpc do, zathura does not.
 - **The deck**: the toolbar's slide menu (▾ at its right end) also gives the slide a transition (fade, dissolve,
-  wipe, push, cover, split, box, glitter: Beamer's `\trans…`, played by viewers that know PDF transitions), the
-  deck a theme and colours (`\usetheme`, `\usecolortheme`), skips the slide (`\begin{frame}<0>`: it stays in the
-  source and the strip, marked "skipped", and makes no page), and presents the deck from this slide (also
-  `F5`): its files saved, the PDF made with `latexmk` and shown full screen in zathura
-  (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
+  wipe, push, cover, split, box, glitter: Beamer's `\trans…`, played by viewers that know PDF transitions), a
+  background of its own (a colour from the palette, or a picture stretched over it: `\tvbackground{red!20}`, the
+  other slides keeping the theme's), the deck a theme, colours and a slide size (16:9, 16:10, 4:3, 3:2, 5:4, 14:9,
+  A4: Beamer's `aspectratio`), skips the slide (`\begin{frame}<0>`: it stays in the source and the strip, marked
+  "skipped", and makes no page), and presents the deck from this slide (also `F5`): its files saved, the PDF made
+  with `latexmk` and shown full screen by pdfpc where it is installed, else Evince (which plays transitions and
+  animations), else zathura (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
+- **Speaker notes**: the slide menu's Speaker notes opens a window under the slide; what you type there goes into
+  the slide's `\note{…}` at once (Beamer leaves notes out of the slides). "Present with speaker notes" makes a
+  second PDF beside the deck, `NAME-notes.pdf`, each page the slide and its notes side by side, and shows it in
+  pdfpc: the slide on the projector, the notes, the next slide and a clock on your screen. It needs pdfpc.
 - **A right click in the strip**: show, skip or show again, duplicate, delete, a new slide after it, move up
   or down.
 - **The Slides menu** in the menu bar has all of them.
@@ -248,7 +258,7 @@ Everything is edited in the source buffers, unsaved, so save them as usual.
 | `texpresso-view-layouts`  | texpresso-view  | six     | the layouts of a new slide in the strip: `(NAME . FRAME-SOURCE)` |
 | `texpresso-view-picture-folders` | texpresso-view | `~/Pictures`, … | the folders the picture panel shows, after the deck's own |
 | `texpresso-view-present-command` | texpresso-view | `latexmk -pdf -synctex=1 …` | the command that makes the PDF to present |
-| `texpresso-view-present-viewer` | texpresso-view | `zathura --mode=presentation …` | the command that shows it full screen (`%f` the PDF, `%p` the page) |
+| `texpresso-view-present-viewer` | texpresso-view | nil: pdfpc, else Evince, else zathura | the command that shows it full screen (`%f` the PDF, `%p` the page) |
 
 ## Terminal Emacs
 
