@@ -86,6 +86,7 @@
 (require 'filenotify)
 (require 'svg)
 (require 'dnd)
+(eval-when-compile (require 'cl-lib))
 
 (defconst texpresso-view-buffer-name "*TeXpresso window*"
   "Name of the buffer showing the page.
@@ -1575,37 +1576,43 @@ source, copy text."
     (texpresso-view--draw-page)
     (when group
       (activate-change-group group))
-    (unwind-protect
-        (progn
-          (track-mouse
-            (while (mouse-movement-p (setq ev (read-event)))
-              (let* ((p (event-start ev))
-                     (pxy (posn-x-y p)))
-                (when (and box statement pxy (eq (posn-window p) win))
-                  (let ((mx (* (- (car pxy) (car origin)) u))
-                        (my (* (- (cdr pxy) (cdr origin)) u)))
-                    (setq moved (or moved (> (abs (- mx x0)) 0.3) (> (abs (- my y0)) 0.3)))
-                    (when moved
-                      (setq new (if corner
-                                    (texpresso-view--resized box corner mx my)
-                                  (list (+ (nth 0 box) (- mx x0)) (+ (nth 1 box) (- my y0))
-                                        (nth 2 box) (nth 3 box))))
-                      (setq texpresso-view--outline new)
-                      (texpresso-view--draw-page)
-                      ;; one change at a time: the next once its page came
-                      (when (or (not texpresso-view--waiting)
-                                (> (- (float-time) texpresso-view--waiting) 0.3))
-                        (setq texpresso-view--waiting (float-time))
-                        (texpresso-view--set-place statement (nth 0 new) (nth 1 new)
-                                                   (and corner (nth 2 new))))))))))
-          (when new
-            (texpresso-view--set-place statement (nth 0 new) (nth 1 new)
-                                       (and corner (nth 2 new)))))
-      (when group
-        (accept-change-group group)
-        (undo-amalgamate-change-group group))
-      (setq texpresso-view--outline nil)
-      (texpresso-view--draw-page))
+    (cl-flet ((follow (p)
+                ;; the place and size for the mouse at P, a position in WIN
+                (let ((pxy (posn-x-y p)))
+                  (when (and box statement pxy (eq (posn-window p) win))
+                    (let ((mx (* (- (car pxy) (car origin)) u))
+                          (my (* (- (cdr pxy) (cdr origin)) u)))
+                      (setq moved (or moved (> (abs (- mx x0)) 0.3) (> (abs (- my y0)) 0.3)))
+                      (when moved
+                        (setq new (if corner
+                                      (texpresso-view--resized box corner mx my)
+                                    (list (+ (nth 0 box) (- mx x0)) (+ (nth 1 box) (- my y0))
+                                          (nth 2 box) (nth 3 box))))))))))
+      (unwind-protect
+          (progn
+            (track-mouse
+              (while (mouse-movement-p (setq ev (read-event)))
+                (follow (event-start ev))
+                (when new
+                  (setq texpresso-view--outline new)
+                  (texpresso-view--draw-page)
+                  ;; one change at a time: the next once its page came
+                  (when (or (not texpresso-view--waiting)
+                            (> (- (float-time) texpresso-view--waiting) 0.3))
+                    (setq texpresso-view--waiting (float-time))
+                    (texpresso-view--set-place statement (nth 0 new) (nth 1 new)
+                                               (and corner (nth 2 new)))))))
+            ;; the release has the last word, whether motion events came or not
+            (when (and (consp ev) (memq 'drag (event-modifiers ev)))
+              (follow (event-end ev)))
+            (when new
+              (texpresso-view--set-place statement (nth 0 new) (nth 1 new)
+                                         (and corner (nth 2 new)))))
+        (when group
+          (accept-change-group group)
+          (undo-amalgamate-change-group group))
+        (setq texpresso-view--outline nil)
+        (texpresso-view--draw-page)))
     (cond
      ((and double (not moved))
       (texpresso-view-edit-object))
@@ -1941,7 +1948,8 @@ A file from outside the document's folder is copied into its figures/."
       (and (executable-find "wl-paste")
            (with-temp-buffer
              (set-buffer-multibyte nil)
-             (and (eq 0 (call-process "wl-paste" nil t nil "--no-newline" "--type" "image/png"))
+             (and (eq 0 (let ((coding-system-for-read 'binary))
+                          (call-process "wl-paste" nil t nil "--no-newline" "--type" "image/png")))
                   (string-prefix-p "\x89PNG" (buffer-string))
                   (buffer-string))))))
 
@@ -2069,20 +2077,22 @@ get to BUF."
       (widen)
       (save-excursion
         (goto-char (point-min))
-        ;; in the root, the slides are after \begin{document}: the frames before
-        ;; it, and in the files it reads there, are macros' (\AtBeginSection)
-        (when (= depth 0)
-          (re-search-forward "^[ \t]*\\\\begin{document}" nil t))
+        ;; the slides are after \begin{document}: the frames before it, and in
+        ;; the files read there, are macros' (\AtBeginSection); a file with one
+        ;; of its own (docmute's decks in a course) also starts after it
+        (re-search-forward "^[ \t]*\\\\begin{document}" nil t)
         (let (frames)
+          ;; a file read by \input, \include or a command of the deck's own
+          ;; (\deck{chapter}): a command alone on its line naming a .tex file
           (while (re-search-forward
-                  "^[ \t]*\\\\\\(?:\\(begin{frame}\\)\\|\\(?:input\\|include\\){\\([^}]+\\)}\\)" nil t)
+                  "^[ \t]*\\\\\\(?:\\(begin{frame}\\)\\|[a-zA-Z]+\\*?{\\([^{}\n]+\\)}[ \t]*\\(?:%.*\\)?$\\)" nil t)
             (if (match-beginning 1)
                 (let ((beg (match-beginning 0)))
                   (when (re-search-forward "\\\\end{frame}" nil t)
                     (push (list buf beg (point) (texpresso-view--frame-title beg (point)))
                           frames)))
               (let ((file (texpresso-view--input-target (match-string 2))))
-                (when (and file (< depth 5))
+                (when (and file (< depth 5) (string-suffix-p ".tex" file))
                   (dolist (frame (texpresso-view--frames-of
                                   (or (find-buffer-visiting file) (find-file-noselect file))
                                   (1+ depth)))

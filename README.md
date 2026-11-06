@@ -153,7 +153,8 @@ The first object placed adds the definitions before `\begin{document}`: a short 
 hand too: the mouse finds them all the same, because TeX writes each object's place and size to its log.
 
 **The slide strip** (`s` in the page's window, or `M-x texpresso-view-slides`) opens on the left. It shows
-every frame of the deck, also those in `\input` files, each with a small picture of its page and its title.
+every frame of the deck, also those in the files it reads (with `\input`, `\include`, or a command of its own
+alone on its line, such as a course's `\deck{chapter}`), each with a small picture of its page and its title.
 The slide on display is highlighted.
 
 | Key in the strip      | Action                                                                  |
@@ -169,7 +170,7 @@ The slide on display is highlighted.
 A slide moves with the comment and setting lines right above its `\begin{frame}`, such as a
 `\setlength` for that frame. Slides made by a macro (`\AtBeginSection`, a command holding a frame) are not
 in the strip, and nothing can be placed on them: there is no `\begin{frame}` of theirs in the deck to edit. While the strip is open, TeXpresso typesets to the end of the deck so that
-every slide has its picture.
+every slide has its picture. On a 644-page course, the pictures take half a second, once you pause typing.
 
 Everything is edited in the source buffers, unsaved, so save them as usual.
 
