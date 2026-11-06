@@ -1369,7 +1369,8 @@ The page then follows the scroll or the page turned, not the cursor."
   \\end{tikzpicture}}}
 \\newsavebox\\tv@cropbox
 \\newcommand\\tvcrop[5]{\\sbox\\tv@cropbox{#5}%
-  \\begin{tikzpicture}[x=\\wd\\tv@cropbox,y=\\ht\\tv@cropbox]
+  \\begin{tikzpicture}[x=\\wd\\tv@cropbox,y=\\ht\\tv@cropbox,
+      baseline=(current bounding box.south)]
     \\useasboundingbox (#1,#2) rectangle ({1-#3},{1-#4});
     \\clip (#1,#2) rectangle ({1-#3},{1-#4});
     \\node[anchor=south west,inner sep=0pt,outer sep=0pt] at (0,0) {\\usebox\\tv@cropbox};
