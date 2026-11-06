@@ -2695,14 +2695,16 @@ and drawn over what comes before it.")
 (defvar texpresso-view--toolbar-cache nil
   "The toolbar last made, and what it was made from: (KEY . STRING).")
 
-(defvar texpresso-view--toolbar-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [header-line down-mouse-1] #'ignore)
-    (define-key map [header-line mouse-1] #'texpresso-view-toolbar-click)
-    (define-key map [tab-line down-mouse-1] #'ignore)
-    (define-key map [tab-line mouse-1] #'texpresso-view-toolbar-click)
-    map)
+(defvar texpresso-view--toolbar-map (make-sparse-keymap)
   "The keys of a toolbar button, in the tab line or the header line.")
+
+;; given at each load, as `texpresso-view--define-keys' gives the page's: a
+;; package loaded again brings its new keys to the map a running Emacs has,
+;; which the bars' buttons hold
+(define-key texpresso-view--toolbar-map [header-line down-mouse-1] #'ignore)
+(define-key texpresso-view--toolbar-map [header-line mouse-1] #'texpresso-view-toolbar-click)
+(define-key texpresso-view--toolbar-map [tab-line down-mouse-1] #'ignore)
+(define-key texpresso-view--toolbar-map [tab-line mouse-1] #'texpresso-view-toolbar-click)
 
 (defun texpresso-view--button (icon label help action &optional off active)
   "A toolbar button: ICON (a name in `texpresso-view--icons', or nil) and LABEL.
@@ -2929,13 +2931,12 @@ spot is where a new object goes, and the menu inserts one."
         (call-process "magick" nil nil nil (concat file "[0]") "-thumbnail" "200x130" thumb)))
     (and (file-exists-p thumb) thumb)))
 
-(defvar texpresso-view-pictures-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map [mouse-1] #'texpresso-view-pictures-click)
-    (define-key map (kbd "RET") #'texpresso-view-pictures-click)
-    (define-key map (kbd "q") #'texpresso-view-pictures-close)
-    map)
+(defvar texpresso-view-pictures-mode-map (make-sparse-keymap)
   "Keys of the picture panel.")
+
+(define-key texpresso-view-pictures-mode-map [mouse-1] #'texpresso-view-pictures-click)
+(define-key texpresso-view-pictures-mode-map (kbd "RET") #'texpresso-view-pictures-click)
+(define-key texpresso-view-pictures-mode-map (kbd "q") #'texpresso-view-pictures-close)
 
 (define-derived-mode texpresso-view-pictures-mode special-mode "Pictures"
   "Pictures to put on the slide: a click puts one there.
@@ -3626,14 +3627,13 @@ It lies flat; drag its ends where they go."
   (interactive)
   (insert "\\\\\n"))
 
-(defvar texpresso-view-text-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'texpresso-view-text-newline)
-    (define-key map (kbd "<escape>") #'texpresso-view-text-done)
-    (define-key map (kbd "C-g") #'texpresso-view-text-done)
-    (define-key map (kbd "C-c C-c") #'texpresso-view-text-done)
-    map)
+(defvar texpresso-view-text-mode-map (make-sparse-keymap)
   "Keys of the text typed on the slide.")
+
+(define-key texpresso-view-text-mode-map (kbd "RET") #'texpresso-view-text-newline)
+(define-key texpresso-view-text-mode-map (kbd "<escape>") #'texpresso-view-text-done)
+(define-key texpresso-view-text-mode-map (kbd "C-g") #'texpresso-view-text-done)
+(define-key texpresso-view-text-mode-map (kbd "C-c C-c") #'texpresso-view-text-done)
 
 (define-derived-mode texpresso-view-text-mode text-mode "Slide text"
   "The text of an object on the slide, typed into its source as it is typed.
