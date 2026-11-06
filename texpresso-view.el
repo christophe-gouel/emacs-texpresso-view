@@ -2949,7 +2949,9 @@ out and makes it do nothing; ACTIVE shows it pressed.  In a narrow bar
         (propertize text 'face 'shadow 'help-echo help)
       (propertize text
                   'face (and active 'texpresso-view-button-on)
-                  'mouse-face 'highlight
+                  ;; a list of its own: Emacs lights up all the text around the
+                  ;; mouse whose mouse-face is the same object, the next buttons too
+                  'mouse-face (list 'highlight)
                   'help-echo help
                   'pointer 'hand
                   'texpresso-view-action action
@@ -3909,7 +3911,7 @@ FN gets the value picked."
 (defun texpresso-view--swatch (color)
   "A colour of the palette: its chip, a click picking COLOR."
   (propertize " " 'display (texpresso-view--chip color)
-              'mouse-face 'highlight
+              'mouse-face (list 'highlight)
               'help-echo (or color "None")
               'pointer 'hand
               'texpresso-view-action (texpresso-view--palette-action color)
