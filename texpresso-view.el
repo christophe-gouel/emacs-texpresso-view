@@ -70,7 +70,9 @@
 ;; opacity; a double click types an object's text on the slide.  Shift and
 ;; a click, or a frame dragged on an empty spot, select several, which move
 ;; and change together; Arrange aligns, centres, spreads and groups them,
-;; and a dragged object snaps to guides.  s opens the slide strip on the left
+;; and makes them appear at a later click; a dragged object snaps to
+;; guides.  The slide menu gives a slide a transition, the deck a theme,
+;; skips a slide, and presents the deck (F5).  s opens the slide strip on the left
 ;; (`texpresso-view-slides'): every frame with a small picture of its page
 ;; and its title, to show, move (M-up, M-down or a drag), copy, delete and
 ;; add from a layout (`texpresso-view-layouts').
@@ -94,6 +96,7 @@
 (require 'texpresso)
 (require 'subr-x)
 (require 'filenotify)
+(require 'format-spec)
 (require 'svg)
 (require 'dnd)
 (eval-when-compile (require 'cl-lib))
@@ -1344,6 +1347,7 @@ The page then follows the scroll or the page turned, not the cursor."
     \\tikzset{anchor=center,inner sep=0pt,outer sep=0pt,name=tv@\\the\\tv@n}},
   tv line/.style={append after command={(\\tikzlastnode.west) edge[#1] (\\tikzlastnode.east)}},
   tv group/.style={},
+  tv appear/.code={\\alt<#1->{}{\\tikzset{opacity=0}}},
   tv shape/.is choice,
   tv shape/rectangle/.style={shape=rectangle},
   tv shape/rounded/.style={shape=rectangle,rounded corners=1.5\\tvu},
@@ -1351,8 +1355,8 @@ The page then follows the scroll or the page turned, not the cursor."
   tv shape/diamond/.style={shape=diamond},
   tv shape/triangle/.style={shape=isosceles triangle,isosceles triangle stretches,
     shape border rotate=90}}
-\\NewDocumentEnvironment{tvlayer}{+b}
-  {\\AddToHookNext{shipout/foreground}{\\tv@layer{#1}}}{}
+\\NewDocumentEnvironment{tvlayer}{O{1}+b}
+  {\\only<#1>{}\\AddToHookNext{shipout/foreground}{\\tv@layer{#2}}}{}
 \\newcommand\\tv@layer[1]{\\global\\tv@n=0
   \\put(0,0){\\begin{tikzpicture}[x=\\tvu,y=-\\tvu,baseline=0pt]
     \\useasboundingbox (0,0) rectangle (1,1);
@@ -2752,7 +2756,9 @@ out and makes it do nothing; ACTIVE shows it pressed."
   `(("New slide after this one" ,@(texpresso-view--layout-items #'texpresso-view-new-slide))
     ["Duplicate this slide" texpresso-view-duplicate-slide t]
     ["Delete this slide" texpresso-view-delete-slide t]
-    ["Show or hide the slide strip" texpresso-view-slides t]))
+    ["Show or hide the slide strip" texpresso-view-slides t]
+    "---"
+    ,@(texpresso-view--deck-items)))
 
 (defun texpresso-view--object-items ()
   "The menu items about the object selected."
@@ -3941,6 +3947,7 @@ The first and the last stay; the gaps between them become equal."
         ("Order"
          ,(item "Bring to front" #'texpresso-view-bring-to-front)
          ,(item "Send to back" #'texpresso-view-send-to-back))
+        ("Appear" ,@(texpresso-view--appear-items))
         ("Rotate"
          ,(item "A quarter to the left" #'texpresso-view-rotate-left)
          ,(item "A quarter to the right" #'texpresso-view-rotate-right)
@@ -3956,6 +3963,247 @@ The first and the last stay; the gaps between them become equal."
   "The format bar's arrange menu, at the click EVENT."
   (interactive "e")
   (popup-menu (easy-menu-create-menu "Arrange" (texpresso-view--arrange-items)) event))
+
+;;; The deck and its slides: presenting it full screen from the slide on
+;;; display, skipping a slide (\begin{frame}<0>, so it makes no page), a
+;;; slide's transition (beamer's \trans… commands, which viewers that
+;;; know PDF transitions play), the deck's theme and colours (\usetheme,
+;;; \usecolortheme); and objects that appear one step after another: a
+;;; `tv appear' key on each, the steps registered by the layer's optional
+;;; argument, \begin{tvlayer}[3], so that Beamer makes a page for each.
+
+(defcustom texpresso-view-present-command
+  "latexmk -pdf -synctex=1 -interaction=nonstopmode %s"
+  "The command that makes the deck's PDF to present; %s is the root file.
+It runs in the root file's folder, and the PDF is taken next to it."
+  :type 'string
+  :group 'tex)
+
+(defcustom texpresso-view-present-viewer "zathura --mode=presentation --page=%p %f"
+  "The command that shows the deck's PDF full screen.
+%f is the PDF, %p the page to start from."
+  :type 'string
+  :group 'tex)
+
+(defconst texpresso-view-present-buffer-name "*texpresso-view present*"
+  "The buffer of the command making the PDF to present.")
+
+(defun texpresso-view-present ()
+  "Present the deck full screen, from the slide on display.
+The deck's files are saved first (each one asked), then the PDF is made
+with `texpresso-view-present-command' and shown with
+`texpresso-view-present-viewer'."
+  (interactive)
+  (unless texpresso-view--root
+    (user-error "No TeXpresso view open"))
+  (let* ((root texpresso-view--root)
+         (dir (file-name-directory root))
+         (pdf (concat (file-name-sans-extension root) ".pdf"))
+         (page (1+ (or texpresso-view--page 0)))
+         (start (current-time))
+         (default-directory dir)
+         (log (get-buffer-create texpresso-view-present-buffer-name)))
+    (save-some-buffers nil (lambda () (and buffer-file-name
+                                           (file-in-directory-p buffer-file-name dir))))
+    (with-current-buffer log
+      (let ((inhibit-read-only t))
+        (erase-buffer)))
+    (message "Making the PDF to present…")
+    (make-process
+     :name "texpresso-view-present"
+     :buffer log
+     :command (list shell-file-name shell-command-switch
+                    (format texpresso-view-present-command
+                            (shell-quote-argument (file-name-nondirectory root))))
+     :sentinel
+     (lambda (process _event)
+       (when (memq (process-status process) '(exit signal))
+         (if (and (file-exists-p pdf)
+                  (or (eql (process-exit-status process) 0)
+                      (time-less-p start (file-attribute-modification-time
+                                          (file-attributes pdf)))))
+             (let ((default-directory dir))
+               (message "Presenting %s from page %d" (file-name-nondirectory pdf) page)
+               (start-process-shell-command
+                "texpresso-view-viewer" nil
+                (format-spec texpresso-view-present-viewer
+                             `((?f . ,(shell-quote-argument pdf)) (?p . ,page)))))
+           (message "The PDF could not be made: see the buffer %s" (buffer-name log))))))))
+
+(defun texpresso-view--frame-skipped-p (buf pos)
+  "Non-nil if the frame at POS of BUF is skipped: \\begin{frame}<0>."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char pos)
+      (looking-at "\\\\begin{frame}<0>"))))
+
+(defun texpresso-view--toggle-skip (buf pos)
+  "Skip the frame at POS of BUF, or show it again if it is skipped."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char pos)
+      (if (looking-at "\\\\begin{frame}\\(<0>\\)")
+          (delete-region (match-beginning 1) (match-end 1))
+        (when (looking-at "\\\\begin{frame}")
+          (goto-char (match-end 0))
+          (insert "<0>"))))))
+
+(defun texpresso-view-skip-slide ()
+  "Skip the slide on display.
+It stays in the source and in the strip, not in the deck.  Done again
+from the strip, it shows the slide again."
+  (interactive)
+  (let ((start (or (texpresso-view--frame-marker)
+                   (user-error "This slide has no \\begin{frame} of its own in the deck"))))
+    (texpresso-view--toggle-skip (marker-buffer start) start)
+    (texpresso-view--strip-schedule)
+    (message "Slide skipped: the strip shows it again (right click)")))
+
+(defun texpresso-view-slides-skip ()
+  "Skip the strip's slide at point, or show it again if it is skipped."
+  (interactive)
+  (let ((frame (nth (texpresso-view--slide-at) texpresso-view--strip-frames)))
+    (texpresso-view--toggle-skip (nth 0 frame) (nth 1 frame))
+    (texpresso-view--strip-draw)))
+
+(defconst texpresso-view-transitions
+  '(("None" . nil) ("Fade" . "\\transfade") ("Dissolve" . "\\transdissolve")
+    ("Wipe" . "\\transwipe") ("Push" . "\\transpush") ("Cover" . "\\transcover")
+    ("Split" . "\\transsplitverticalout") ("Box" . "\\transboxout") ("Glitter" . "\\transglitter"))
+  "The transitions a slide can have: (NAME . BEAMER-COMMAND).")
+
+(defun texpresso-view-set-transition (command)
+  "Give the slide on display the transition COMMAND, as \\transfade; nil: none.
+It is a line right after the frame's first."
+  (pcase-let ((`(,buf ,beg ,end) (or (texpresso-view--frame)
+                                     (user-error "No frame found in the source for this slide"))))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char beg)
+        (if (re-search-forward "^[ \t]*\\\\trans[a-z]+\\(?:<[^>\n]*>\\)?\\(?:\\[[^]\n]*\\]\\)?[ \t]*\n" end t)
+            (replace-match (if command (concat "  " command "\n") "") t t)
+          (when command
+            (goto-char beg)
+            (forward-line 1)
+            (insert "  " command "\n")))))))
+
+(defconst texpresso-view-themes
+  '("default" "AnnArbor" "Antibes" "Bergen" "Berkeley" "Berlin" "Boadilla" "CambridgeUS"
+    "Copenhagen" "Darmstadt" "Dresden" "Frankfurt" "Goettingen" "Hannover" "Ilmenau"
+    "JuanLesPins" "Luebeck" "Madrid" "Malmoe" "Marburg" "Montpellier" "PaloAlto" "Pittsburgh"
+    "Rochester" "Singapore" "Szeged" "Warsaw" "metropolis")
+  "Beamer's themes, and Metropolis.")
+
+(defconst texpresso-view-color-themes
+  '("default" "albatross" "beaver" "beetle" "crane" "dolphin" "dove" "fly" "lily" "orchid"
+    "rose" "seagull" "seahorse" "whale" "wolverine")
+  "Beamer's colour themes.")
+
+(defun texpresso-view--set-preamble-command (command value)
+  "Make the deck's \\COMMAND{VALUE}: replace the first, or add one.
+It is looked for in the root file and the files it reads; a new one goes
+right before \\begin{document}."
+  (let* ((root (texpresso-view--root-buffer))
+         (buffers (cons root (mapcar (lambda (f) (or (find-buffer-visiting f) (find-file-noselect f)))
+                                     (texpresso-view--input-files root))))
+         (re (concat "^[ \t]*\\\\" command "\\(?:\\[[^]\n]*\\]\\)?{\\([^}\n]*\\)}")))
+    (unless (seq-some (lambda (b)
+                        (with-current-buffer b
+                          (save-excursion
+                            (goto-char (point-min))
+                            (when (re-search-forward re nil t)
+                              (replace-match value t t nil 1)
+                              t))))
+                      buffers)
+      (with-current-buffer root
+        (save-excursion
+          (goto-char (point-min))
+          (unless (re-search-forward "^[ \t]*\\\\begin{document}" nil t)
+            (user-error "No \\begin{document} in %s" (file-name-nondirectory texpresso-view--root)))
+          (goto-char (line-beginning-position))
+          (insert (format "\\%s{%s}\n" command value)))))))
+
+(defun texpresso-view-set-theme (theme)
+  "Give the deck Beamer's THEME."
+  (interactive (list (completing-read "Theme: " texpresso-view-themes nil t)))
+  (texpresso-view--set-preamble-command "usetheme" theme))
+
+(defun texpresso-view-set-color-theme (theme)
+  "Give the deck Beamer's colour THEME."
+  (interactive (list (completing-read "Colours: " texpresso-view-color-themes nil t)))
+  (texpresso-view--set-preamble-command "usecolortheme" theme))
+
+(defun texpresso-view--update-steps ()
+  "Give the layer of the slide on display as many steps as its objects appear in."
+  (pcase-let ((`(,buf ,beg ,end) (texpresso-view--frame)))
+    (when buf
+      (let ((steps (apply #'max 1 (mapcar (lambda (s)
+                                            (let ((v (texpresso-view--option s "tv appear")))
+                                              (if (stringp v) (string-to-number v) 1)))
+                                          (texpresso-view--frame-statements)))))
+        (with-current-buffer buf
+          (save-excursion
+            (goto-char beg)
+            (when (re-search-forward "\\\\begin{tvlayer}\\(?:\\[[0-9]+\\]\\)?" end t)
+              (replace-match (if (> steps 1) (format "\\begin{tvlayer}[%d]" steps)
+                               "\\begin{tvlayer}")
+                             t t))))))))
+
+(defun texpresso-view-set-appear (step)
+  "Make the objects selected appear at STEP of their slide: 1 with it.
+Each step is a click of the presentation, a page of the deck."
+  (texpresso-view--format
+   (lambda (statement _kind)
+     (texpresso-view--put-option statement "tv appear" (and (> step 1) (number-to-string step)))))
+  (texpresso-view--update-steps))
+
+(defun texpresso-view--appear-items ()
+  "The menu items that make the objects selected appear at a step."
+  (mapcar (lambda (step)
+            (vector (if (= step 1) "With the slide" (format "At click %d" (1- step)))
+                    (lambda () (interactive) (texpresso-view-set-appear step))
+                    'texpresso-view--selected))
+          '(1 2 3 4 5 6)))
+
+(defun texpresso-view--deck-items ()
+  "The menu items about the deck: transition, theme, colours, presenting."
+  `(("Transition"
+     ,@(mapcar (lambda (tr) (vector (car tr) (lambda () (interactive) (texpresso-view-set-transition (cdr tr))) t))
+               texpresso-view-transitions))
+    ("Theme"
+     ,@(mapcar (lambda (th) (vector th (lambda () (interactive) (texpresso-view-set-theme th)) t))
+               texpresso-view-themes))
+    ("Colours"
+     ,@(mapcar (lambda (th) (vector th (lambda () (interactive) (texpresso-view-set-color-theme th)) t))
+               texpresso-view-color-themes))
+    ["Skip this slide" texpresso-view-skip-slide t]
+    "---"
+    ["Present from this slide" texpresso-view-present t]))
+
+(defun texpresso-view-slides-context-menu (event)
+  "The menu of the strip's slide right-clicked in EVENT."
+  (interactive "e")
+  (let* ((posn (event-start event))
+         (pos (posn-point posn))
+         (i (and pos (get-text-property pos 'texpresso-view-slide (window-buffer (posn-window posn))))))
+    (when i
+      (select-window (posn-window posn))
+      (texpresso-view--strip-goto i)
+      (let* ((frame (nth i texpresso-view--strip-frames))
+             (skipped (texpresso-view--frame-skipped-p (nth 0 frame) (nth 1 frame))))
+        (popup-menu
+         (easy-menu-create-menu
+          "Slide"
+          `(["Show it" texpresso-view-slides-show (not ,skipped)]
+            [,(if skipped "Show it again in the deck" "Skip it") texpresso-view-slides-skip t]
+            ["Duplicate" texpresso-view-slides-duplicate t]
+            ["Delete" texpresso-view-slides-delete t]
+            ("New slide after it"
+             ,@(texpresso-view--layout-items #'texpresso-view-slides-new))
+            "---"
+            ["Move up" texpresso-view-slides-move-up t]
+            ["Move down" texpresso-view-slides-move-down t]))
+         event)))))
 
 
 ;;; The slide strip, as Google Slides has on the left: the deck's frames in
@@ -4152,6 +4400,9 @@ A frame with overlays has a page for each: the last one, the frame whole."
                   (unless images (insert " ")))
                 (insert (let ((title (nth 3 frame)))
                           (if (string-empty-p title) "(no title)" title))
+                        (if (texpresso-view--frame-skipped-p (nth 0 frame) (nth 1 frame))
+                            (propertize " (skipped)" 'face 'shadow)
+                          "")
                         "\n")
                 (put-text-property start (point) 'texpresso-view-slide n)
                 (when on
@@ -4477,6 +4728,8 @@ Its title (or first text) is selected in the source window: type over it."
   (define-key map (kbd "a") #'texpresso-view-slides-new)
   (define-key map (kbd "g") #'texpresso-view-slides-refresh)
   (define-key map (kbd "q") #'texpresso-view-slides)
+  (define-key map [down-mouse-3] #'texpresso-view-slides-context-menu)
+  (define-key map [mouse-3] #'ignore)
   map)
 
 (texpresso-view--define-slides-keys texpresso-view-slides-mode-map)
@@ -4527,6 +4780,7 @@ the map a running Emacs already has."
   (define-key map [mouse-3] #'ignore)
   ;; shift and a click adds to the objects selected; on a slide a drag on an
   ;; empty spot frames objects, so Meta and a drag copies the page's text there
+  (define-key map (kbd "<f5>") #'texpresso-view-present)
   (define-key map [S-down-mouse-1] #'texpresso-view-mouse-down-add)
   (define-key map [S-mouse-1] #'ignore)
   (define-key map [S-drag-mouse-1] #'ignore)
@@ -4577,7 +4831,8 @@ the map a running Emacs already has."
     ["Duplicate this slide" texpresso-view-duplicate-slide t]
     ["Delete this slide" texpresso-view-delete-slide t]
     ["Slide strip" texpresso-view-slides :style toggle
-     :selected (texpresso-view--strip-window)]))
+     :selected (texpresso-view--strip-window)]
+    ("Deck" :filter (lambda (_) (texpresso-view--deck-items)))))
 
 (define-derived-mode texpresso-view-mode special-mode "TeXpresso"
   "TeXpresso's page, beside the source.

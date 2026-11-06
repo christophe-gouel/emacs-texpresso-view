@@ -143,6 +143,16 @@ Everything is done with the mouse:
   slide), centres them on the slide, spreads three or more evenly, and groups them: a click on one of a group
   selects them all. While you drag an object, pink guides show where it lines up with the slide's edges and
   middle or with the other objects, and it snaps there.
+- **Appearing on a click**: Arrange ▾ → Appear puts an object in at a later click of the presentation (Beamer
+  makes a page for each step: `tv appear=2`, and the layer's `\begin{tvlayer}[2]`).
+- **The deck**: the toolbar's slide menu (▾ at its right end) also gives the slide a transition (fade, dissolve,
+  wipe, push, cover, split, box, glitter: Beamer's `\trans…`, played by viewers that know PDF transitions), the
+  deck a theme and colours (`\usetheme`, `\usecolortheme`), skips the slide (`\begin{frame}<0>`: it stays in the
+  source and the strip, marked "skipped", and makes no page), and presents the deck from this slide (also
+  `F5`): its files saved, the PDF made with `latexmk` and shown full screen in zathura
+  (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
+- **A right click in the strip**: show, skip or show again, duplicate, delete, a new slide after it, move up
+  or down.
 - **The Slides menu** in the menu bar has all of them.
 - **The picture panel** (Picture ▾, Recent pictures) shows small previews of the pictures in the deck's folder,
   its `figures/`, `~/Pictures`, `~/Pictures/Screenshots`, `~/Downloads` and `~/Desktop`
@@ -221,6 +231,8 @@ Everything is edited in the source buffers, unsaved, so save them as usual.
 | `texpresso-view-cell-size`| texpresso-view  | `nil`   | terminal cell size `(W . H)` in pixels, if the terminal doesn't report it |
 | `texpresso-view-layouts`  | texpresso-view  | six     | the layouts of a new slide in the strip: `(NAME . FRAME-SOURCE)` |
 | `texpresso-view-picture-folders` | texpresso-view | `~/Pictures`, … | the folders the picture panel shows, after the deck's own |
+| `texpresso-view-present-command` | texpresso-view | `latexmk -pdf -synctex=1 …` | the command that makes the PDF to present |
+| `texpresso-view-present-viewer` | texpresso-view | `zathura --mode=presentation …` | the command that shows it full screen (`%f` the PDF, `%p` the page) |
 
 ## Terminal Emacs
 
