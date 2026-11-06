@@ -143,9 +143,13 @@ Everything is done with the mouse:
   slide), centres them on the slide, spreads three or more evenly, and groups them: a click on one of a group
   selects them all. While you drag an object, pink guides show where it lines up with the slide's edges and
   middle or with the other objects, and it snaps there.
-- **Cropping a picture**: Crop in its format bar, a double click, or the right-click menu; its handles then
-  cut its sides, the picture keeping its size and place, a dashed outline showing all of it (`\tvcrop{L}{B}{R}{T}{…}`,
-  a TikZ clip in fractions of the picture). "Show all of the picture" takes the crop away.
+- **Cropping a picture**: Crop in its format bar, a double click, or the right-click menu; its handles, bars
+  and corners then, cut its sides, the picture keeping its size and place, all of it shown faded inside a dashed
+  line as in Google Slides (`\tvcrop{L}{B}{R}{T}{…}`, a TikZ clip in fractions of the picture). Esc, or a click
+  elsewhere, ends; "Show all of the picture" takes the crop away.
+- **The pointer** over a handle shows which way it drags: a two-headed arrow left and right, or up and down,
+  as the object is turned; a hand at a corner and at the round knob (Emacs has no slanted arrow). It keeps that
+  shape while the handle is dragged.
 - **Tables**: Shape ▾ → Table, or a right click on an empty spot: a `tabular` in a node, its cells typed in the box
   a double click opens.
 - **Appearing on a click**: Arrange ▾ → Appear puts an object in at a later click of the presentation (Beamer

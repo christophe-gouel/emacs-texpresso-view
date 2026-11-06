@@ -71,7 +71,8 @@
 ;; a click, or a frame dragged on an empty spot, select several, which move
 ;; and change together; Arrange aligns, centres, spreads and groups them,
 ;; and makes them appear at a later click; a dragged object snaps to
-;; guides.  A picture is cropped by its handles (a double click), and
+;; guides; over a handle the pointer shows which way it drags.  A picture
+;; is cropped by its handles (a double click), all of it shown faded, and
 ;; tables come from the Shape menu.  The slide menu gives a slide a transition, the deck a theme,
 ;; skips a slide, and presents the deck (F5).  s opens the slide strip on the left
 ;; (`texpresso-view-slides'): every frame with a small picture of its page
@@ -148,6 +149,15 @@ FRAME is its child frame, or nil; BEG and END mark the text in the source.")
 
 (defvar texpresso-view--cropping nil
   "The picture being cropped: its number, or nil.")
+
+(defvar texpresso-view--crop-full nil
+  "All of the picture being cropped: (K . CORNERS), its corners on the slide.
+Taken once when cropping starts, from TeX's box and the source's crop
+then in step, and kept while it lasts: a crop never moves the picture,
+and TeX's box lags behind each crop written while the mouse drags.")
+
+(defvar texpresso-view--drag-pointer nil
+  "The mouse pointer's shape while a handle is dragged, or nil.")
 
 (defvar texpresso-view--also nil
   "The other objects selected: (PRIMARY . NUMBERS), PRIMARY the one selected with.")
@@ -1483,6 +1493,113 @@ corners first, and `rotate' over its top."
                             (eql texpresso-view--cropping texpresso-view--selected))
                  (list (list 'rotate 0 (- (+ b texpresso-view--rotate-reach))))))))))
 
+(defun texpresso-view--handle-pointer (box handle)
+  "The mouse pointer's shape over HANDLE of BOX: a two-headed arrow, or a hand.
+Emacs has an arrow left and right and one up and down, none slanted: a
+side, or a line's end, takes the nearer to its direction as BOX is
+turned; a corner and the turning knob, a hand."
+  (let* ((a (or (nth 4 box) 0))
+         (angle (pcase handle
+                  ((or 'e 'w 'west 'east) a)
+                  ((or 'n 's) (+ a 90)))))
+    (cond ((null angle) 'hand)
+          ((>= (abs (cos (degrees-to-radians angle))) (abs (sin (degrees-to-radians angle))))
+           'hdrag)
+          (t 'nhdrag))))
+
+(defun texpresso-view--page-map (box handles u)
+  "An image map giving the mouse pointer's shape over BOX's HANDLES.
+U is the image's pixels per slide unit.  Each hot spot's id is a number:
+a symbol would come before each click on it as a key of its own."
+  (let ((r (max 4 (round (* u (min 2.0 (max 0.8 (* 6 (texpresso-view--units-per-pixel))))))))
+        (i 0))
+    (mapcar (lambda (handle)
+              (setq i (1+ i))
+              (list (cons 'circle (cons (cons (round (* (nth 1 handle) u)) (round (* (nth 2 handle) u)))
+                                        r))
+                    i
+                    (list 'pointer (texpresso-view--handle-pointer box (car handle)))))
+            handles)))
+
+(defun texpresso-view--crop-marks (svg box u color)
+  "Draw on SVG the handles of BOX being cropped: side bars and corner angles.
+U is the image's pixels per slide unit; COLOR the marks'."
+  (pcase-let* ((`(,_ ,_ ,w ,h) box)
+               (a (/ w 2.0)) (b (/ h 2.0))
+               (l (min (/ 12.0 u) (/ w 3.0) (/ h 3.0))))
+    (dolist (mark (list (list (cons (- a) (+ (- b) l)) (cons (- a) (- b)) (cons (+ (- a) l) (- b)))
+                        (list (cons (- a l) (- b)) (cons a (- b)) (cons a (+ (- b) l)))
+                        (list (cons a (- b l)) (cons a b) (cons (- a l) b))
+                        (list (cons (+ (- a) l) b) (cons (- a) b) (cons (- a) (- b l)))
+                        (list (cons (- l) (- b)) (cons l (- b)))
+                        (list (cons (- l) b) (cons l b))
+                        (list (cons (- a) (- l)) (cons (- a) l))
+                        (list (cons a (- l)) (cons a l))))
+      (svg-polyline svg (mapcar (lambda (c)
+                                  (let ((p (texpresso-view--global box (car c) (cdr c))))
+                                    (cons (* (car p) u) (* (cdr p) u))))
+                                mark)
+                    :fill "none" :stroke color :stroke-width 4 :stroke-linecap "square"))))
+
+(defvar texpresso-view--crop-preview nil
+  "The preview of the picture being cropped: (FILE . DATA), its PNG.")
+
+(defun texpresso-view--picture-file (statement)
+  "The file of STATEMENT's picture, as TeX finds it from the root's folder, or nil."
+  (pcase-let ((`(,buf ,beg ,end) statement))
+    (with-current-buffer buf
+      (save-excursion
+        (goto-char beg)
+        (when (re-search-forward "\\\\includegraphics\\(?:\\[[^]]*\\]\\)?{\\([^}]+\\)}" end t)
+          (let ((name (match-string-no-properties 1))
+                (dir (file-name-directory (or texpresso-view--root buffer-file-name))))
+            (seq-find #'file-regular-p
+                      (mapcar (lambda (ext) (expand-file-name (concat name ext) dir))
+                              '("" ".png" ".pdf" ".jpg" ".jpeg")))))))))
+
+(defun texpresso-view--crop-picture (statement)
+  "A PNG of all of STATEMENT's picture, 1000 pixels a side at most, or nil.
+It is made once, as the picture panel's previews are, and read once."
+  (let* ((file (texpresso-view--picture-file statement))
+         (preview (and file (texpresso-view--thumbnail file 1000))))
+    (when preview
+      (unless (equal (car texpresso-view--crop-preview) preview)
+        (setq texpresso-view--crop-preview
+              (cons preview (with-temp-buffer
+                              (set-buffer-multibyte nil)
+                              (insert-file-contents-literally preview)
+                              (buffer-string)))))
+      (cdr texpresso-view--crop-preview))))
+
+(defun texpresso-view--crop-corners (box statement)
+  "The corners of all of STATEMENT's picture being cropped, BOX the part shown.
+Taken once a cropping (`texpresso-view--crop-full')."
+  (unless (eql (car texpresso-view--crop-full) texpresso-view--cropping)
+    (setq texpresso-view--crop-full
+          (cons texpresso-view--cropping
+                (texpresso-view--crop-ghost box (texpresso-view--crop statement)))))
+  (cdr texpresso-view--crop-full))
+
+(defun texpresso-view--draw-crop (svg box statement u color)
+  "Draw on SVG all of STATEMENT's picture, cropped to BOX, as Google Slides does.
+The part cut away shows faded, a dashed line round it; the handles are
+bars and corners.  U is the image's pixels per slide unit; COLOR the
+selection's.  A picture that cannot be previewed gets the line only."
+  (let* ((corners (mapcar (lambda (p) (cons (* (car p) u) (* (cdr p) u)))
+                          (texpresso-view--crop-corners box statement)))
+         (data (texpresso-view--crop-picture statement)))
+    (when data
+      (pcase-let* ((`(,p0 ,p1 ,p2 ,p3) corners)
+                   (cx (/ (+ (car p0) (car p2)) 2.0))
+                   (cy (/ (+ (cdr p0) (cdr p2)) 2.0))
+                   (w (sqrt (+ (expt (- (car p1) (car p0)) 2) (expt (- (cdr p1) (cdr p0)) 2))))
+                   (h (sqrt (+ (expt (- (car p3) (car p0)) 2) (expt (- (cdr p3) (cdr p0)) 2)))))
+        (svg-embed svg data "image/png" t
+                   :x (- cx (/ w 2.0)) :y (- cy (/ h 2.0)) :width w :height h
+                   :preserveAspectRatio "none" :opacity 0.45
+                   :transform (format "rotate(%s %s %s)" (- (or (nth 4 box) 0)) cx cy))))
+    (svg-polygon svg corners :fill "none" :stroke color :stroke-width 1.5 :stroke-dasharray "6 4")))
+
 (defun texpresso-view--page-image (data width height)
   "The page's image from its PNG DATA, WIDTH x HEIGHT, the selection outlined.
 With an outline, an SVG that holds the PNG and draws the outline, turned
@@ -1495,12 +1612,25 @@ selected, a small cross where the next object goes."
                                (delq nil (mapcar (lambda (k) (cdr (assq k boxes))) ks)))))))
          (box (and (not several) (texpresso-view--box)))
          (anchor (and (not texpresso-view--selected) (texpresso-view--deck-p)
-                      texpresso-view--anchor)))
+                      texpresso-view--anchor))
+         (cropping (and box texpresso-view--cropping
+                        (eql texpresso-view--cropping texpresso-view--selected)
+                        (nth (1- texpresso-view--selected) (texpresso-view--frame-statements)))))
+    (unless cropping
+      (setq texpresso-view--crop-full nil))
     (if (not (and (or box anchor several texpresso-view--band) (image-type-available-p 'svg)))
-        (create-image data 'png t :scale 1.0 :width width :height height)
-      (let ((svg (svg-create width height))
-            (u (/ width 100.0))
-            (color texpresso-view--outline-color))
+        (create-image data 'png t :scale 1.0 :width width :height height :pointer 'arrow)
+      (let* ((svg (svg-create width height))
+             (u (/ width 100.0))
+             (color texpresso-view--outline-color)
+             (handles (and box (texpresso-view--handles box)))
+             ;; over a handle the pointer says which way it drags; while it
+             ;; drags, the shape it had is over the whole page
+             (pointer (list :pointer (or texpresso-view--drag-pointer 'arrow)))
+             ;; (Emacs scales a map to the image, which needs a graphical frame)
+             (map (and handles (not texpresso-view--drag-pointer)
+                       (display-graphic-p (window-frame (texpresso-view--window)))
+                       (list :map (texpresso-view--page-map box handles u)))))
         (svg-embed svg data "image/png" t :x 0 :y 0 :width width :height height)
         (dolist (b several)
           (when b
@@ -1525,8 +1655,9 @@ selected, a small cross where the next object goes."
         (cond
          (several)
          (box
-          (pcase-let* ((`(,_ ,_ ,w ,h ,_ ,kind) box)
-                       (handles (texpresso-view--handles box)))
+          (pcase-let ((`(,_ ,_ ,w ,h ,_ ,kind) box))
+            (when cropping
+              (texpresso-view--draw-crop svg box cropping u color))
             (unless (eq kind 'line)
               (svg-polygon svg (mapcar (lambda (c)
                                          (let ((p (texpresso-view--global box (car c) (cdr c))))
@@ -1539,29 +1670,21 @@ selected, a small cross where the next object goes."
               (let ((top (assq 'n handles)) (knob (assq 'rotate handles)))
                 (when knob
                   (svg-line svg (* (nth 1 top) u) (* (nth 2 top) u) (* (nth 1 knob) u) (* (nth 2 knob) u)
-                            :stroke color :stroke-width 1.5)))
-              ;; a picture being cropped: all of it, dashed
-              (when (and texpresso-view--cropping (eql texpresso-view--cropping texpresso-view--selected))
-                (let ((statement (nth (1- texpresso-view--selected) (texpresso-view--frame-statements))))
-                  (when statement
-                    (svg-polygon svg (mapcar (lambda (p) (cons (* (car p) u) (* (cdr p) u)))
-                                             (texpresso-view--crop-ghost box (texpresso-view--crop statement)))
-                                 :fill "none" :stroke "#5f6368" :stroke-width 1
-                                 :stroke-dasharray "5 3")))))
-            (dolist (handle handles)
-              (if (memq (car handle) '(rotate west east))
-                  (svg-circle svg (* (nth 1 handle) u) (* (nth 2 handle) u) 5
-                              :fill (if (eq (car handle) 'rotate) color "white")
-                              :stroke color :stroke-width 1.5)
-                (svg-rectangle svg (- (* (nth 1 handle) u) 4) (- (* (nth 2 handle) u) 4) 8 8
-                               :fill (if (eql texpresso-view--cropping texpresso-view--selected)
-                                         "black" "white")
-                               :stroke color :stroke-width 1.5)))))
+                            :stroke color :stroke-width 1.5))))
+            (if cropping
+                (texpresso-view--crop-marks svg box u color)
+              (dolist (handle handles)
+                (if (memq (car handle) '(rotate west east))
+                    (svg-circle svg (* (nth 1 handle) u) (* (nth 2 handle) u) 5
+                                :fill (if (eq (car handle) 'rotate) color "white")
+                                :stroke color :stroke-width 1.5)
+                  (svg-rectangle svg (- (* (nth 1 handle) u) 4) (- (* (nth 2 handle) u) 4) 8 8
+                                 :fill "white" :stroke color :stroke-width 1.5))))))
          (anchor
           (let ((ax (* (car anchor) u)) (ay (* (cdr anchor) u)))
             (svg-line svg (- ax 6) ay (+ ax 6) ay :stroke color :stroke-width 1.5)
             (svg-line svg ax (- ay 6) ax (+ ay 6) :stroke color :stroke-width 1.5))))
-        (svg-image svg :scale 1.0)))))
+        (apply #'svg-image svg :scale 1.0 (append pointer map))))))
 
 (defun texpresso-view--hit (x y)
   "The object at X Y on the slide, the topmost: (K HANDLE), or nil.
@@ -2016,6 +2139,7 @@ does what it did before: jump to the source, copy text."
       (unwind-protect
           (progn
             (track-mouse
+              (setq track-mouse 'dragging)
               (while (mouse-movement-p (setq ev (read-event)))
                 (follow (event-start ev))
                 (when moved
@@ -2047,6 +2171,10 @@ does what it did before: jump to the source, copy text."
                      (and b (append (seq-take b 4)
                                     (list (texpresso-view--angle statement)
                                           (texpresso-view--kind statement)))))))
+         (pointer (and corner box (texpresso-view--handle-pointer box corner)))
+         ;; a picture being cropped, moved: all of it moves with what shows
+         (full (and (not corner) (eql texpresso-view--cropping k)
+                    (eql (car texpresso-view--crop-full) k) (cdr texpresso-view--crop-full)))
          (corner (and corner statement (texpresso-view--resize-handle statement corner)))
          (aspect (and statement (eq (texpresso-view--kind statement) 'picture)
                       (not (texpresso-view--key-value statement 'height))))
@@ -2088,10 +2216,18 @@ does what it did before: jump to the source, copy text."
                           (pcase-let ((`(,gx ,gy ,guides) (texpresso-view--guides-for new others)))
                             (setq new (append (list (+ (nth 0 new) gx) (+ (nth 1 new) gy))
                                               (nthcdr 2 new))
-                                  texpresso-view--guides guides)))))))))
+                                  texpresso-view--guides guides)))
+                        (when full
+                          (let ((dx (- (nth 0 new) (nth 0 box))) (dy (- (nth 1 new) (nth 1 box))))
+                            (setq texpresso-view--crop-full
+                                  (cons k (mapcar (lambda (c) (cons (+ (car c) dx) (+ (cdr c) dy)))
+                                                  full)))))))))))
       (unwind-protect
           (progn
             (track-mouse
+              ;; the pointer keeps the shape it had at the press
+              (setq track-mouse 'dragging
+                    texpresso-view--drag-pointer pointer)
               (while (mouse-movement-p (setq ev (read-event)))
                 (follow (event-start ev))
                 (when new
@@ -2111,7 +2247,8 @@ does what it did before: jump to the source, copy text."
           (accept-change-group group)
           (undo-amalgamate-change-group group))
         (setq texpresso-view--outline nil
-              texpresso-view--guides nil)
+              texpresso-view--guides nil
+              texpresso-view--drag-pointer nil)
         (texpresso-view--draw-page)))
     (cond
      ((and double (not moved))
@@ -2621,14 +2758,22 @@ cut goes where it was, a little lower when that place is taken."
   (interactive)
   (let ((frame (texpresso-view--frame)))
     (with-current-buffer (if frame (car frame) (texpresso-view--root-buffer))
-      (undo-only))))
+      (undo-only)))
+  ;; an undo may move the picture being cropped: cropping ends, its outline taken afresh next time
+  (when texpresso-view--cropping
+    (setq texpresso-view--cropping nil)
+    (texpresso-view--draw-page)))
 
 (defun texpresso-view-redo ()
   "Redo the last change undone in the slide on display's source."
   (interactive)
   (let ((frame (texpresso-view--frame)))
     (with-current-buffer (if frame (car frame) (texpresso-view--root-buffer))
-      (undo-redo))))
+      (undo-redo)))
+  ;; an undo may move the picture being cropped: cropping ends, its outline taken afresh next time
+  (when texpresso-view--cropping
+    (setq texpresso-view--cropping nil)
+    (texpresso-view--draw-page)))
 
 ;;; The toolbar, the menus and the picture panel: everything above on the
 ;;; slide reached with the mouse, as in Google Slides.  The toolbar is the
@@ -2914,21 +3059,25 @@ spot is where a new object goes, and the menu inserts one."
             (seq-take (sort (delete-dups files) (lambda (a b) (time-less-p (cdr b) (cdr a))))
                       texpresso-view--pictures-max))))
 
-(defun texpresso-view--thumbnail (file)
-  "A small PNG preview of the picture FILE, made once: its path, or nil."
+(defun texpresso-view--thumbnail (file &optional size)
+  "A small PNG preview of the picture FILE, made once: its path, or nil.
+It is 200 x 130 pixels at most, or SIZE a side, never larger than FILE."
   (let* ((dir (expand-file-name "texpresso-view/previews"
                                 (or (getenv "XDG_CACHE_HOME") "~/.cache")))
          (thumb (expand-file-name
-                 (concat (md5 (format "%s %s" file (file-attribute-modification-time
-                                                    (file-attributes file))))
+                 (concat (md5 (format "%s %s%s" file (file-attribute-modification-time
+                                                      (file-attributes file))
+                                      (if size (format " %d" size) "")))
                          ".png")
                  dir)))
     (unless (file-exists-p thumb)
       (make-directory dir t)
       (if (string-match-p "\\.pdf\\'" (downcase file))
           (call-process "pdftoppm" nil nil nil "-png" "-singlefile" "-f" "1" "-l" "1"
-                        "-scale-to" "200" file (file-name-sans-extension thumb))
-        (call-process "magick" nil nil nil (concat file "[0]") "-thumbnail" "200x130" thumb)))
+                        "-scale-to" (number-to-string (or size 200))
+                        file (file-name-sans-extension thumb))
+        (call-process "magick" nil nil nil (concat file "[0]") "-thumbnail"
+                      (if size (format "%dx%d>" size size) "200x130") thumb)))
     (and (file-exists-p thumb) thumb)))
 
 (defvar texpresso-view-pictures-mode-map (make-sparse-keymap)
@@ -3711,7 +3860,9 @@ Esc ends.  A picture is cropped instead."
                       (texpresso-view--text-region statement))))
     (cond
      ((eq (texpresso-view--kind statement) 'picture)
-      (texpresso-view-crop))
+      ;; a double click on a picture being cropped goes on cropping it
+      (unless (eql texpresso-view--cropping texpresso-view--selected)
+        (texpresso-view-crop)))
      ((not region)
       (texpresso-view-edit-object))
      (t
@@ -3846,6 +3997,7 @@ its command then."
                         (setq band (list (min x0 mx) (min y0 my) (abs (- mx x0)) (abs (- my y0))))))))))
       (unwind-protect
           (track-mouse
+            (setq track-mouse 'dragging)
             (while (mouse-movement-p (setq ev (read-event)))
               (follow (event-start ev))
               (when band
