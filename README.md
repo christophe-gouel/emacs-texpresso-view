@@ -131,8 +131,8 @@ Everything is done with the mouse:
   to front and send to back for the object selected; Slides (the strip) and ▾ (a new slide from a layout, a copy
   of this one, or deleting it).
 - **The format bar** under it, for the object selected: Fill, Border and Text colours (a click opens a palette in
-  the bar's place), border Weight and Dash, the text's Size, bold, italic and alignment, Edit text, a quarter
-  turn left or right, Opacity; for a line its Colour, Weight, Dash and Arrows. Colours are written as xcolor
+  the bar's place), the border's weight and dashes, the text's size, bold, italic and alignment, and Arrange ▾
+  (below; also a quarter turn, upright, opacity); for a line its Colour, weight, dashes and Arrows. Colours are written as xcolor
   expressions (`red!40`, `blue!60!black`).
 - **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
   size, rotate, edit its text, edit in the source. On an empty spot: paste, a text box, a picture, a shape or

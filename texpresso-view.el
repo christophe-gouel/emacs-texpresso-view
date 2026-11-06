@@ -2622,6 +2622,8 @@ cut goes where it was, a little lower when that place is taken."
     (align-right "M3 5 H17" "M8 9 H17" "M3 13 H17" "M10 17 H17")
     (rotate-left "M5 8 A6 6 0 1 1 6 14" "M2 5 L5 8 L8 5")
     (rotate-right "M15 8 A6 6 0 1 0 14 14" "M18 5 L15 8 L12 5")
+    (weight (fill "M3 4 H17 V5 H3 Z") (fill "M3 8 H17 V10 H3 Z") (fill "M3 13 H17 V16 H3 Z"))
+    (dash "M3 5 H17" "M3 10 H6 M9 10 H12 M15 10 H17" "M3 15 H4 M7 15 H8 M11 15 H12 M15 15 H16")
     (new-slide "M3 5 H17 V15 H3 Z" "M10 7.5 V12.5" "M7.5 10 H12.5"))
   "The toolbar's icons, on a 20 x 20 grid: (NAME PATH …).
 A path is a string of SVG path data, stroked; (fill PATH) is filled too,
@@ -3420,15 +3422,15 @@ FN gets the value picked."
      (if (eq kind 'line)
          (concat (texpresso-view--color-button
                   'line "Colour" (or (texpresso-view--option statement "color" t) "black"))
-                 (texpresso-view--button nil "Weight ▾" "Line weight" #'texpresso-view-weight-menu)
-                 (texpresso-view--button nil "Dash ▾" "Solid, dashed or dotted"
+                 (texpresso-view--button 'weight "▾" "Line weight" #'texpresso-view-weight-menu)
+                 (texpresso-view--button 'dash "▾" "Solid, dashed or dotted"
                                          #'texpresso-view-dash-menu)
                  (texpresso-view--button nil "Arrows ▾" "Arrow heads" #'texpresso-view-arrows-menu))
        (concat (unless (eq kind 'picture)
                  (texpresso-view--color-button 'fill "Fill" fill))
                (texpresso-view--color-button 'border "Border" (and draw (if (stringp draw) draw "black")))
-               (texpresso-view--button nil "Weight ▾" "Border weight" #'texpresso-view-weight-menu)
-               (texpresso-view--button nil "Dash ▾" "Solid, dashed or dotted border"
+               (texpresso-view--button 'weight "▾" "Border weight" #'texpresso-view-weight-menu)
+               (texpresso-view--button 'dash "▾" "Solid, dashed or dotted border"
                                        #'texpresso-view-dash-menu)))
      (when (memq kind '(text shape))
        (concat sep
@@ -3441,25 +3443,19 @@ FN gets the value picked."
                (texpresso-view--button 'bold nil "Bold" #'texpresso-view-toggle-bold nil (nth 1 font))
                (texpresso-view--button 'italic nil "Italic" #'texpresso-view-toggle-italic nil
                                        (nth 2 font))
-               (texpresso-view--button 'align-left nil "Align left"
-                                       (lambda () (interactive) (texpresso-view-set-align "left"))
-                                       nil (equal align "left"))
-               (texpresso-view--button 'align-center nil "Centre"
-                                       (lambda () (interactive) (texpresso-view-set-align "center"))
-                                       nil (equal align "center"))
-               (texpresso-view--button 'align-right nil "Align right"
-                                       (lambda () (interactive) (texpresso-view-set-align "right"))
-                                       nil (equal align "right"))
-               (texpresso-view--button nil "Edit text" "Type the text on the slide"
-                                       #'texpresso-view-edit-text)))
+               (texpresso-view--button (pcase align ("center" 'align-center) ("right" 'align-right)
+                                         (_ 'align-left))
+                                       "▾" "Text alignment" #'texpresso-view-align-text-menu)))
      sep
-     (texpresso-view--button nil "Arrange ▾" "Align, centre, spread, group"
-                             #'texpresso-view-arrange-menu)
-     (texpresso-view--button 'rotate-left nil "Turn a quarter to the left"
-                             #'texpresso-view-rotate-left)
-     (texpresso-view--button 'rotate-right nil "Turn a quarter to the right"
-                             #'texpresso-view-rotate-right)
-     (texpresso-view--button nil "Opacity ▾" "How opaque" #'texpresso-view-opacity-menu))))
+     (texpresso-view--button nil "Arrange ▾" "Align, centre, spread, group, turn, opacity"
+                             #'texpresso-view-arrange-menu))))
+
+(defun texpresso-view-align-text-menu (event)
+  "The format bar's text alignment menu, at the click EVENT."
+  (interactive "e")
+  (texpresso-view--choose event "Text alignment"
+                          '(("Left" . "left") ("Centre" . "center") ("Right" . "right"))
+                          #'texpresso-view-set-align))
 
 (defun texpresso-view--format-bar ()
   "The format bar, for the page window's header line, on a Beamer deck.
@@ -3945,6 +3941,14 @@ The first and the last stay; the gaps between them become equal."
         ("Order"
          ,(item "Bring to front" #'texpresso-view-bring-to-front)
          ,(item "Send to back" #'texpresso-view-send-to-back))
+        ("Rotate"
+         ,(item "A quarter to the left" #'texpresso-view-rotate-left)
+         ,(item "A quarter to the right" #'texpresso-view-rotate-right)
+         ,(item "Upright" (lambda () (texpresso-view-rotate-by
+                                       (- (texpresso-view--angle (texpresso-view--selected-statement)))))))
+        ("Opacity"
+         ,@(mapcar (lambda (o) (item (format "%d%%" (* 100 o)) (lambda () (texpresso-view-set-opacity o))))
+                   '(1 0.75 0.5 0.25)))
         ,(item "Group" #'texpresso-view-group (cdr ks))
         ,(item "Ungroup" #'texpresso-view-ungroup grouped)))))
 
