@@ -75,7 +75,8 @@
 ;; a font, underline, strikethrough, lists and line spacing; objects a flip
 ;; and a drop shadow; sixteen shapes come from the Shape menu.  Objects
 ;; come in with an animation; a slide gets a background of its own and
-;; speaker notes, typed in a window under it.  A picture
+;; speaker notes, typed in a window under it; its own title and text are
+;; typed where they are, and the text dragged becomes a box.  A picture
 ;; is cropped by its handles (a double click), all of it shown faded, and
 ;; tables come from the Shape menu.  The slide menu gives a slide a transition, the deck a theme,
 ;; skips a slide, and presents the deck (F5).  s opens the slide strip on the left
@@ -150,6 +151,9 @@ One of `fill', `border', `text', `line'.")
 (defvar texpresso-view--editor nil
   "The text being typed on the slide: (FRAME BUFFER BEG END), or nil.
 FRAME is its child frame, or nil; BEG and END mark the text in the source.")
+
+(defvar texpresso-view--typing-flow nil
+  "Non-nil while the slide's own title or text is typed: its outline is drawn.")
 
 (defvar texpresso-view--cropping nil
   "The picture being cropped: its number, or nil.")
@@ -1435,7 +1439,7 @@ The page then follows the scroll or the page turned, not the cursor."
 \\newcommand\\tv@mark[1]{\\tv@savepos\\write\\@unused{texpresso-view: flow
   \\the\\ReadonlyShipoutCounter\\space#1\\space\\the\\numexpr\\tv@lastx*10000/\\paperwidth\\relax\\space
   \\the\\numexpr(\\paperheight-\\tv@lasty)*10000/\\paperwidth\\relax}}
-\\AddToHook{env/beamer@framepauses/after}{\\tv@mark{body-top}}
+\\AddToHook{env/beamer@framepauses/begin}{\\tv@mark{body-top}}
 \\AddToHook{env/beamer@framepauses/end}{\\tv@mark{body-bottom}}
 \\AtBeginDocument{\\addtobeamertemplate{frametitle}{\\tv@mark{title-top}}{\\tv@mark{title-bottom}}}
 \\makeatother
@@ -2150,7 +2154,20 @@ does what it did before: jump to the source, copy text."
       (texpresso-view--draw-page)
       (when (and at (texpresso-view--deck-p))
         (select-window win)
-        (texpresso-view--band event))))))
+        (let ((ev (texpresso-view--wait-drag event)))
+          (cond
+           ((memq 'double (event-modifiers event))
+            ;; a double click on the slide's own title or text types it there
+            (let ((what (texpresso-view--flow-hit (texpresso-view--flow-ready) (car at) (cdr at))))
+              (if what
+                  (texpresso-view--type-flow what)
+                (when (and ev (not (eq ev 'moved))) (push ev unread-command-events)))))
+           ((not (eq ev 'moved))
+            (when ev (push ev unread-command-events)))
+           ;; a drag on the slide's own text makes it a box and moves it
+           ((eq (texpresso-view--flow-hit (texpresso-view--flow-ready) (car at) (cdr at)) 'body)
+            (texpresso-view--flow-drag event))
+           (t (texpresso-view--band event)))))))))
 
 (defun texpresso-view--drag-all (event ks)
   "Drag the objects KS together from the press EVENT until the release."
@@ -3103,6 +3120,7 @@ spot is where a new object goes, and the menu inserts one."
           (texpresso-view--object-items)
         `(["Paste" texpresso-view-paste t]
           ["Select all" texpresso-view-select-all t]
+          ["Make the slide's text a box" texpresso-view-flow-to-box t]
           ["Text box" texpresso-view-add-text t]
           ("Picture" ,@(texpresso-view--picture-items))
           ("Shape" ,@(texpresso-view--shape-items))
@@ -4220,31 +4238,40 @@ Esc ends.  A picture is cropped instead."
       (texpresso-view-edit-object))
      (t
       (texpresso-view-text-done)
-      (let* ((src (car statement))
-             (beg (with-current-buffer src (copy-marker (car region))))
-             (end (with-current-buffer src (copy-marker (cdr region) t)))
-             (text (with-current-buffer src (buffer-substring-no-properties beg end)))
-             (buf (get-buffer-create texpresso-view-text-buffer-name))
-             frame)
-        (with-current-buffer buf
-          (texpresso-view-text-mode)
-          (let ((inhibit-modification-hooks t))
-            (erase-buffer)
-            (insert text))
-          (setq texpresso-view--text-target (list src beg end))
-          (add-hook 'after-change-functions #'texpresso-view--text-changed nil t)
-          (if (equal text "Text")
-              (texpresso-view--select-placeholder (point-min) (point-max))
-            (goto-char (point-max))))
-        (setq frame (condition-case nil (texpresso-view--text-frame buf) (error nil)))
-        (unless (or frame noninteractive)
-          (select-window (display-buffer-in-side-window buf '((side . bottom) (slot . 1)
-                                                              (window-height . 5)))))
-        (setq texpresso-view--editor (list frame buf beg end)))))))
+      (texpresso-view--type-region (car statement) (car region) (cdr region))))))
+
+(defun texpresso-view--type-region (src from to)
+  "Type the text from FROM to TO of the buffer SRC, in a small box.
+The box is under the outline drawn; what is typed goes into SRC at
+once; Esc ends."
+  (let* ((beg (with-current-buffer src (copy-marker from)))
+         (end (with-current-buffer src (copy-marker to t)))
+         (text (with-current-buffer src (buffer-substring-no-properties beg end)))
+         (buf (get-buffer-create texpresso-view-text-buffer-name))
+         frame)
+    (with-current-buffer buf
+      (texpresso-view-text-mode)
+      (let ((inhibit-modification-hooks t))
+        (erase-buffer)
+        (insert text))
+      (setq texpresso-view--text-target (list src beg end))
+      (add-hook 'after-change-functions #'texpresso-view--text-changed nil t)
+      (if (equal text "Text")
+          (texpresso-view--select-placeholder (point-min) (point-max))
+        (goto-char (point-max))))
+    (setq frame (condition-case nil (texpresso-view--text-frame buf) (error nil)))
+    (unless (or frame noninteractive)
+      (select-window (display-buffer-in-side-window buf '((side . bottom) (slot . 1)
+                                                          (window-height . 5)))))
+    (setq texpresso-view--editor (list frame buf beg end))))
 
 (defun texpresso-view-text-done ()
   "End typing the text of an object on the slide."
   (interactive)
+  (when texpresso-view--typing-flow
+    (setq texpresso-view--typing-flow nil
+          texpresso-view--outline nil)
+    (texpresso-view--draw-page))
   (when texpresso-view--editor
     (pcase-let ((`(,frame ,buf ,beg ,end) texpresso-view--editor))
       (setq texpresso-view--editor nil)
@@ -4261,6 +4288,229 @@ Esc ends.  A picture is cropped instead."
           (unless noninteractive
             (select-frame-set-input-focus (window-frame win)))
           (select-window win))))))
+
+;;; A slide's own title and text, as Beamer sets them, as Google Slides'
+;;; placeholders: where they are comes from TeX (the preamble block's flow
+;;; marks, "texpresso-view: flow PAGE WHAT X Y", in hundredths of a unit);
+;;; a double click types either where it is, and a drag on the text makes
+;;; it a text box first, at the same place, the whole in one undo.  The
+;;; title stays where the theme puts it.  A text with overlays (\pause,
+;;; <2->…), or a fragile or verbatim frame, stays as it is.
+
+(defun texpresso-view--flow ()
+  "Where the slide on display's own title and text are, from TeX's marks.
+An alist: (title X Y W H) and (body X Y W H), in slide units; either
+missing when TeX wrote no marks for it."
+  (when (and texpresso-view--page (buffer-live-p texpresso-view--log))
+    (with-current-buffer texpresso-view--log
+      (save-excursion
+        (goto-char (point-min))
+        (let ((re (format "^texpresso-view: flow %d \\([a-z-]+\\) \\(-?[0-9]+\\) \\(-?[0-9]+\\)"
+                          (1+ texpresso-view--page)))
+              marks)
+          (while (re-search-forward re nil t)
+            (setf (alist-get (intern (match-string 1)) marks)
+                  (cons (/ (string-to-number (match-string 2)) 100.0)
+                        (/ (string-to-number (match-string 3)) 100.0))))
+          (let ((tt (alist-get 'title-top marks)) (tb (alist-get 'title-bottom marks))
+                (bt (alist-get 'body-top marks)) (bb (alist-get 'body-bottom marks)))
+            (delq nil
+                  (list (and tt tb (> (cdr tb) (cdr tt))
+                             (list 'title 0 (cdr tt) 100 (- (cdr tb) (cdr tt))))
+                        (and bt bb (> (cdr bb) (+ (cdr bt) 1)) (< (car bt) 50)
+                             (list 'body (car bt) (cdr bt) (- 100 (* 2 (car bt)))
+                                   (- (cdr bb) (cdr bt))))))))))))
+
+(defun texpresso-view--flow-hit (flow x y)
+  "What of FLOW is at X Y: `title', `body' or nil.
+FLOW is as `texpresso-view--flow' gives it."
+  (seq-some (lambda (f)
+              (pcase-let ((`(,what ,fx ,fy ,fw ,fh) f))
+                (and (<= fx x (+ fx fw)) (<= fy y (+ fy fh)) what)))
+            flow))
+
+(defun texpresso-view--flow-ready ()
+  "The flow of the slide on display, the preamble block put in first if missing.
+TeX writes where a slide's title and text are only with the block: then
+it is waited for, a few seconds at most."
+  (or (texpresso-view--flow)
+      (progn
+        (texpresso-view--frame-marker)
+        (texpresso-view--ensure-preamble)
+        (let ((end (+ (float-time) 5)) flow)
+          (while (and (not (setq flow (texpresso-view--flow))) (< (float-time) end))
+            (accept-process-output nil 0.05))
+          flow))))
+
+(defun texpresso-view--skip-args (end)
+  "Move past the <…>, […] and {…} arguments at point, up to END."
+  (let ((more t))
+    (while more
+      (skip-chars-forward " \t" end)
+      (cond ((and (eq (char-after) ?<) (search-forward ">" end t)))
+            ((eq (char-after) ?\[)
+             (goto-char (or (texpresso-view--group-end (point) ?\[ ?\]) end)))
+            ((eq (char-after) ?\{)
+             (goto-char (or (texpresso-view--group-end (point) ?\{ ?\}) end)))
+            (t (setq more nil))))))
+
+(defun texpresso-view--title-region (buf beg end)
+  "Where the title of the frame from BEG to END of BUF is: (FROM . TO), or nil.
+It is its \\frametitle's, or the first braces after \\begin{frame}."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char beg)
+      (cond
+       ((re-search-forward "\\\\frametitle\\(?:<[^>\n]*>\\)?\\(?:\\[[^]\n]*\\]\\)?[ \t]*{" end t)
+        (let ((close (texpresso-view--group-end (1- (point)) ?\{ ?\})))
+          (and close (cons (point) (1- close)))))
+       ((progn (goto-char beg) (re-search-forward "\\\\begin{frame}" end t))
+        (let ((more t) found)
+          (while (and more (not found))
+            (skip-chars-forward " \t" end)
+            (cond ((and (eq (char-after) ?<) (search-forward ">" end t)))
+                  ((eq (char-after) ?\[)
+                   (goto-char (or (texpresso-view--group-end (point) ?\[ ?\]) end)))
+                  ((eq (char-after) ?\{)
+                   (let ((close (texpresso-view--group-end (point) ?\{ ?\})))
+                     (setq found (and close (cons (1+ (point)) (1- close))))))
+                  (t (setq more nil))))
+          found))))))
+
+(defconst texpresso-view--flow-keep-regexp
+  (concat "^[ \t]*\\\\\\(frametitle\\|framesubtitle\\|trans[a-z]+\\|tvbackground\\|note"
+          "\\|transduration\\)\\>")
+  "The lines of a frame's body that are not its text: they stay.")
+
+(defun texpresso-view--flow-pieces (buf beg end)
+  "The frame from BEG to END of BUF's own text, in pieces: ((FROM . TO) …).
+It starts after the frame's header and ends before its tvlayer or
+\\end{frame}; the title, notes, transitions and background are left out."
+  (with-current-buffer buf
+    (save-excursion
+      (goto-char beg)
+      (re-search-forward "\\\\begin{frame}" end)
+      (texpresso-view--skip-args end)
+      (when (looking-at "[ \t]*$")
+        (forward-line 1))
+      (let* ((from (point))
+             (to (save-excursion
+                   (or (and (re-search-forward "^[ \t]*\\\\begin{tvlayer}" end t) (match-beginning 0))
+                       (and (re-search-forward "^[ \t]*\\\\end{frame}" end t) (match-beginning 0))
+                       (progn (goto-char end) (search-backward "\\end{frame}" from t))
+                       end)))
+             (pieces nil)
+             (at from))
+        (goto-char from)
+        (while (re-search-forward texpresso-view--flow-keep-regexp to t)
+          (let ((keep-from (line-beginning-position)))
+            (goto-char (match-end 0))
+            (texpresso-view--skip-args to)
+            (let ((keep-to (min to (1+ (line-end-position)))))
+              (when (< at keep-from) (push (cons at keep-from) pieces))
+              (setq at keep-to)
+              (goto-char keep-to))))
+        (when (< at to) (push (cons at to) pieces))
+        (seq-filter (lambda (p) (string-match-p "[^ \t\n]" (buffer-substring-no-properties (car p) (cdr p))))
+                    (nreverse pieces))))))
+
+(defun texpresso-view--flow-refusal (buf beg end text)
+  "Why the frame from BEG to END of BUF cannot make its TEXT a box, or nil."
+  (let ((header (with-current-buffer buf
+                  (save-excursion
+                    (goto-char beg)
+                    (buffer-substring-no-properties beg (min end (line-end-position)))))))
+    (cond
+     ((string-match-p "fragile\\|allowframebreaks" header)
+      "a fragile frame, or one that breaks over several slides")
+     ((string-match-p "\\\\begin{\\(?:verbatim\\|lstlisting\\|minted\\|semiverbatim\\)}" text)
+      "verbatim text")
+     ((string-match-p (concat "\\\\\\(?:pause\\|only\\|uncover\\|onslide\\|visible\\|invisible"
+                              "\\|alt\\|temporal\\|framebreak\\)\\>\\|<[0-9+.|-][0-9+.|, -]*>")
+                      text)
+      "steps of its own (\\pause, \\only, <2->…)"))))
+
+(defun texpresso-view--flow-to-box ()
+  "Make the slide on display's own text a text box where it was: its number.
+The text leaves the frame's flow for a node of the tvlayer, the width of
+the slide's text, centred where the text was."
+  (pcase-let* ((`(,buf ,beg ,end) (or (texpresso-view--frame)
+                                      (user-error "No frame found in the source for this slide")))
+               (body (cdr (assq 'body (texpresso-view--flow))))
+               (pieces (texpresso-view--flow-pieces buf beg end))
+               (text (string-trim (mapconcat (lambda (p) (with-current-buffer buf
+                                                           (buffer-substring-no-properties (car p) (cdr p))))
+                                             pieces "\n"))))
+    (unless (and body pieces (not (string-empty-p text)))
+      (user-error "This slide has no text of its own to move"))
+    (let ((why (texpresso-view--flow-refusal buf beg end text)))
+      (when why
+        (user-error "This slide's text stays as it is: %s" why)))
+    (with-current-buffer buf
+      (dolist (p (reverse pieces))
+        (delete-region (car p) (cdr p))))
+    (pcase-let ((`(,x ,y ,w ,h) body))
+      (texpresso-view--insert-object
+       (format "\\node[tv,text width=%s\\tvu,align=left] at (%s,%s) {%s};"
+               (texpresso-view--number w)
+               (texpresso-view--number (+ x (/ w 2.0))) (texpresso-view--number (+ y (/ h 2.0)))
+               text)))
+    (length (texpresso-view--frame-statements))))
+
+(defun texpresso-view-flow-to-box ()
+  "Make the slide on display's own text a text box, to move, size and format."
+  (interactive)
+  (texpresso-view--flow-ready)
+  (let ((k (texpresso-view--flow-to-box)))
+    (texpresso-view--select (list k))
+    (texpresso-view--draw-page)))
+
+(defun texpresso-view--wait-drag (event)
+  "Wait for the mouse pressed in EVENT to move a few pixels, or be released.
+Returns `moved', or the event that came instead."
+  (let* ((start (posn-x-y (event-start event)))
+         (mouse-fine-grained-tracking t)
+         ev)
+    (track-mouse
+      (while (and (mouse-movement-p (setq ev (read-event)))
+                  (let ((xy (posn-x-y (event-start ev))))
+                    (or (null xy) (null start)
+                        (and (< (abs (- (car xy) (car start))) 4)
+                             (< (abs (- (cdr xy) (cdr start))) 4)))))))
+    (if (mouse-movement-p ev) 'moved ev)))
+
+(defun texpresso-view--flow-drag (event)
+  "Drag the slide's own text from the press EVENT: a text box first.
+The text made a box and the drag are one undo."
+  (pcase-let* ((`(,buf . ,_) (texpresso-view--frame))
+               (group (and buf (prepare-change-group buf))))
+    (when group (activate-change-group group))
+    (unwind-protect
+        (let ((k (texpresso-view--flow-to-box))
+              (end (+ (float-time) 5)))
+          (while (and (not (assq k (texpresso-view--objects))) (< (float-time) end))
+            (accept-process-output nil 0.05))
+          (texpresso-view--select (list k))
+          (texpresso-view--drag event k nil))
+      (when group
+        (accept-change-group group)
+        (undo-amalgamate-change-group group)))))
+
+(defun texpresso-view--type-flow (what)
+  "Type the slide on display's own WHAT, `title' or `body', where it is."
+  (pcase-let* ((`(,buf ,beg ,end) (or (texpresso-view--frame)
+                                      (user-error "No frame found in the source for this slide")))
+               (box (cdr (assq what (texpresso-view--flow))))
+               (region (if (eq what 'title)
+                           (texpresso-view--title-region buf beg end)
+                         (let ((pieces (texpresso-view--flow-pieces buf beg end)))
+                           (car (sort pieces (lambda (a b) (> (- (cdr a) (car a)) (- (cdr b) (car b))))))))))
+    (unless (and box region)
+      (user-error "This slide has no %s of its own" (if (eq what 'title) "title" "text")))
+    (setq texpresso-view--outline (append box (list 0 'text))
+          texpresso-view--typing-flow t)
+    (texpresso-view--draw-page)
+    (texpresso-view--type-region buf (car region) (cdr region))))
 
 ;;; Arranging: several objects selected (shift and a click, or a frame
 ;;; dragged around them on an empty spot), moved, formatted, copied and

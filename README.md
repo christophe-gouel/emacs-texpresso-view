@@ -141,6 +141,12 @@ Everything is done with the mouse:
 - **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
   size, rotate, edit its text, replace a picture by another (its size and crop kept), edit in the source. On
   an empty spot: paste, select all, a text box, a picture, a shape or a line there, and the slide's commands.
+- **A slide's own title and text** (what Beamer sets from the frame, not placed with the mouse), as Google
+  Slides' placeholders: a double click on either types it where it is; a drag on the text makes it a text box at
+  the same place (its LaTeX, unchanged, moved into a node of the slide's layer) and moves it, one undo putting it
+  all back; so does the right-click menu's "Make the slide's text a box". The title stays where the theme puts
+  it. A text with steps of its own (`\pause`, `\only`, `<2->`…), or a fragile or verbatim frame, stays as it
+  is. TeX says where they are (the block's `\pdfsavepos` marks), so a deck gets the block the first time.
 - **Flipping**: Arrange ▾ → Rotate → Flip mirrors a picture (`\reflectbox`, or `\tvflipv` upside down), turns
   a line's ends across, and points an arrow the other way or a triangle down.
 - **Arranging**: shift and a click adds an object to those selected, and a frame dragged from an empty spot
