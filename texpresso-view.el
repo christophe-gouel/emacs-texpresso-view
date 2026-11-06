@@ -2842,6 +2842,9 @@ also compile with latexmk."
                    (split-window (selected-window) nil 'right))))
       (with-current-buffer buf
         (texpresso-view-mode)
+        ;; the buffer outlives a switch to another document: its prompts
+        ;; (a picture's, `i') start in this one's folder
+        (setq default-directory (file-name-directory root))
         ;; global-display-line-numbers-mode turns them on once the mode is
         ;; set: their gutter pushed the page right and cut it off
         (when (bound-and-true-p display-line-numbers-mode)
