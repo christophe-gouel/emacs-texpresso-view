@@ -127,16 +127,22 @@ Everything is done with the mouse:
 
 - **The toolbar** over the page, on a Beamer deck: undo and redo; Text (a text box); Picture ▾ (from your
   computer, in your system's file window; from a panel of recent pictures; or pasted); Shape ▾ (rectangle,
-  rounded rectangle, ellipse, diamond, triangle); Line ▾ (line, arrow, double arrow); duplicate, delete, bring
-  to front and send to back for the object selected; Slides (the strip) and ▾ (a new slide from a layout, a copy
-  of this one, or deleting it).
+  rounded rectangle, ellipse, diamond, triangle, hexagon, snipped rectangle, trapezium, parallelogram, cylinder;
+  an arrow; a callout, a speech and a thought bubble; a cloud, a banner; and tables); Line ▾ (line, arrow, double
+  arrow); duplicate, delete, bring to front and send to back for the object selected; Slides (the strip) and ▾ (a
+  new slide from a layout, a copy of this one, or deleting it).
 - **The format bar** under it, for the object selected: Fill, Border and Text colours (a click opens a palette in
-  the bar's place), the border's weight and dashes, the text's size, bold, italic and alignment, and Arrange ▾
-  (below; also a quarter turn, upright, opacity); for a line its Colour, weight, dashes and Arrows. Colours are written as xcolor
-  expressions (`red!40`, `blue!60!black`).
+  the bar's place), the border's weight and dashes, the text's size, bold, italic and alignment, a bulleted or
+  numbered list (each line an item), the text's style (its font, sans serif, serif or monospace; underline and
+  strikethrough, `\uline` and `\sout`; line spacing; clearing all of it), and Arrange ▾ (below; also a quarter
+  turn, upright, a flip, a drop shadow, opacity); for a line its Colour, weight, dashes and Arrows. Colours are
+  written as xcolor expressions (`red!40`, `blue!60!black`). In a narrow window both bars keep their icons and drop
+  their words.
 - **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
   size, rotate, edit its text, edit in the source. On an empty spot: paste, a text box, a picture, a shape or
   a line there, and the slide's commands.
+- **Flipping**: Arrange ▾ → Rotate → Flip mirrors a picture (`\reflectbox`, or `\tvflipv` upside down), turns
+  a line's ends across, and points an arrow the other way or a triangle down.
 - **Arranging**: shift and a click adds an object to those selected, and a frame dragged from an empty spot
   selects what it touches; several selected move, change look, copy and delete together. Arrange ▾, in the
   format bar or the right-click menu, aligns them (left, centre, right, top, middle, bottom; one alone with the
@@ -204,8 +210,9 @@ it about its centre. A line is a node too, as long as its width, drawn from end 
 ```
 
 The first object placed adds the definitions before `\begin{document}`: a short block between
-`% texpresso-view slides: begin` and `end` comments, needing only TikZ. So the deck still builds with
-`pdflatex`, `xelatex` or `lualatex`, with or without this package. A deck with an older block gets the
+`% texpresso-view slides: begin` and `end` comments, needing only TikZ (with its shape and shadow libraries)
+and `ulem` (for underline and strikethrough, with `normalem`, so `\emph` stays italic), both in every TeX
+distribution. So the deck still builds with `pdflatex`, `xelatex` or `lualatex`, with or without this package. A deck with an older block gets the
 current one in its place. You can write and edit such nodes by hand too: the mouse finds them all the same,
 because TeX writes each object's place and size to its log.
 
