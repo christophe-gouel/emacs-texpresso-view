@@ -1,7 +1,7 @@
 From 11304e3018c598c2f0d46d83488061ee41101a9d Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Tue, 27 Oct 2026 07:56:25 +0100
-Subject: [PATCH 14/20] The driver reaps the root TeX processes it replaces
+Subject: [PATCH 14/21] The driver reaps the root TeX processes it replaces
 
 The root TeX process is the driver's child (the snapshots are its own
 children), and the driver never waited for one it replaced: every run of

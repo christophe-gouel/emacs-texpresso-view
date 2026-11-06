@@ -301,6 +301,7 @@ what this package needs; the others fix bugs found while using it every day.
 | 0018 | A picture clipped with adjustbox's `clip` is drawn clipped, and no longer kills TeXpresso; a clip a page never closes is closed at its end |
 | 0019 | A picture found in the TeX tree (texmf), not beside the document, is drawn: a PNG or JPEG was left out of the page, a PDF gave TeX an error |
 | 0020 | A picture cut by `\includegraphics[trim=…,clip]` is drawn cut, as XeTeX draws it, not whole and squeezed; a PDF picture so cut no longer kills TeXpresso |
+| 0021 | A picture not cut fills its box whatever resolution its file gives (a JPEG with an Exif resolution was drawn at a quarter of its size after 0020) |
 
 ## Notes and limitations
 
