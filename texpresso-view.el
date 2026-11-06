@@ -280,7 +280,7 @@ SOURCE and LINE: where the page starts in the source, if TeXpresso knows."
         (with-current-buffer buf
           (let ((inhibit-read-only t))
             (when texpresso-view--image
-              (image-flush texpresso-view--image))
+              (image-flush texpresso-view--image t))
             (setq texpresso-view--image (texpresso-view--page-image data width height))
             (erase-buffer)
             ;; Centre the page in its window: TeXpresso fits it to the window,
