@@ -116,13 +116,30 @@ A click also selects the page's window, so its keys work at once.
 
 A Beamer deck can be edited as in Google Slides, and the LaTeX source follows.
 
-**On the page.** Put a picture or a text box on the slide, then drag it where you want it, or pull a corner to
-resize it. While you drag, the source changes and TeXpresso redraws the slide. A whole drag is one undo.
+**On the page.** Put a picture or a text box on the slide, then drag it where you want it, or pull one of its
+eight handles to resize it (a picture's corners keep its shape, its sides stretch it). While you drag, the source
+changes and TeXpresso redraws the slide. A whole drag is one undo.
+
+Everything is done with the mouse:
+
+- **The toolbar** over the page, on a Beamer deck: undo and redo; Text (a text box); Picture ▾ (from your
+  computer, in your system's file window; from a panel of recent pictures; or pasted); duplicate, delete, bring
+  to front and send to back for the object selected; Slides (the strip) and ▾ (a new slide from a layout, a copy
+  of this one, or deleting it).
+- **A right click** on an object: cut, copy, paste, duplicate, delete, order (front, forward, backward, back),
+  size, edit in the source. On an empty spot: paste, a text box, a picture there, and the slide's commands.
+- **The Slides menu** in the menu bar has all of them.
+- **The picture panel** (Picture ▾, Recent pictures) shows small previews of the pictures in the deck's folder,
+  its `figures/`, `~/Pictures`, `~/Pictures/Screenshots`, `~/Downloads` and `~/Desktop`
+  (`texpresso-view-picture-folders`), the newest first; a click puts one on the slide.
+- A press on an empty spot marks it with a small cross: the next object goes there.
+
+The keys, for those who want them:
 
 | Key in the page's window     | Action                                                                   |
 |------------------------------|--------------------------------------------------------------------------|
 | `i`                          | put a picture (PNG, JPEG, PDF) on the slide, where you last clicked      |
-| `C-y`                        | paste the picture on the clipboard (a screenshot), saved in `figures/`   |
+| `C-y`                        | paste: the picture on the clipboard (a screenshot, saved in `figures/`), or the object copied |
 | drop a file                  | a picture dragged from a file manager goes where it's dropped            |
 | `t`                          | a text box; the cursor goes to its text in the source, to type over      |
 | click on an object           | select it: a blue outline with four handles                              |
@@ -134,23 +151,24 @@ resize it. While you drag, the source changes and TeXpresso redraws the slide. A
 | `Esc`                        | unselect                                                                 |
 | `s`                          | open or close the slide strip                                            |
 
-What goes on a slide is plain TikZ. Each object is a node in the frame's `tvlayer`, at `(x,y)` from the
+What goes on a slide is plain TikZ. Each object is a node in the frame's `tvlayer`, centred at `(x,y)` from the
 slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever its aspect ratio:
 
 ```latex
 \begin{frame}{Results}
   Text in the flow, as usual.
   \begin{tvlayer}
-    \node[tv] at (10,20) {\includegraphics[width=30\tvu]{figures/plot.png}};
-    \node[tv,text width=40\tvu,align=left] at (55,20) {A text box};
+    \node[tv] at (25,35) {\includegraphics[width=30\tvu]{figures/plot.png}};
+    \node[tv,text width=40\tvu,align=left] at (75,25) {A text box};
   \end{tvlayer}
 \end{frame}
 ```
 
 The first object placed adds the definitions before `\begin{document}`: a short block between
 `% texpresso-view slides: begin` and `end` comments, needing only TikZ. So the deck still builds with
-`pdflatex`, `xelatex` or `lualatex`, with or without this package. You can write and edit such nodes by
-hand too: the mouse finds them all the same, because TeX writes each object's place and size to its log.
+`pdflatex`, `xelatex` or `lualatex`, with or without this package. A deck with an older block gets the
+current one in its place. You can write and edit such nodes by hand too: the mouse finds them all the same,
+because TeX writes each object's place and size to its log.
 
 **The slide strip** (`s` in the page's window, or `M-x texpresso-view-slides`) opens on the left. It shows
 every frame of the deck, also those in the files it reads (with `\input`, `\include`, or a command of its own
@@ -182,6 +200,7 @@ Everything is edited in the source buffers, unsaved, so save them as usual.
 | `texpresso-follow-cursor` | `texpresso.el`  | `nil`   | `t`: the page follows the cursor                      |
 | `texpresso-view-cell-size`| texpresso-view  | `nil`   | terminal cell size `(W . H)` in pixels, if the terminal doesn't report it |
 | `texpresso-view-layouts`  | texpresso-view  | six     | the layouts of a new slide in the strip: `(NAME . FRAME-SOURCE)` |
+| `texpresso-view-picture-folders` | texpresso-view | `~/Pictures`, … | the folders the picture panel shows, after the deck's own |
 
 ## Terminal Emacs
 
