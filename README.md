@@ -143,6 +143,11 @@ Everything is done with the mouse:
   slide), centres them on the slide, spreads three or more evenly, and groups them: a click on one of a group
   selects them all. While you drag an object, pink guides show where it lines up with the slide's edges and
   middle or with the other objects, and it snaps there.
+- **Cropping a picture**: Crop in its format bar, a double click, or the right-click menu; its handles then
+  cut its sides, the picture keeping its size and place, a dashed outline showing all of it (`\tvcrop{L}{B}{R}{T}{…}`,
+  a TikZ clip in fractions of the picture). "Show all of the picture" takes the crop away.
+- **Tables**: Shape ▾ → Table, or a right click on an empty spot: a `tabular` in a node, its cells typed in the box
+  a double click opens.
 - **Appearing on a click**: Arrange ▾ → Appear puts an object in at a later click of the presentation (Beamer
   makes a page for each step: `tv appear=2`, and the layer's `\begin{tvlayer}[2]`).
 - **The deck**: the toolbar's slide menu (▾ at its right end) also gives the slide a transition (fade, dissolve,
