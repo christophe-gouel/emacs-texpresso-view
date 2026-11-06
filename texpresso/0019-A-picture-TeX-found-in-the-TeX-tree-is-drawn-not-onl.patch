@@ -1,7 +1,7 @@
 From df9c0a62e333d2c4d9753e1791e65a76044037f1 Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Fri, 6 Nov 2026 06:23:42 +0100
-Subject: [PATCH 19/19] A picture TeX found in the TeX tree is drawn, not only
+Subject: [PATCH 19/20] A picture TeX found in the TeX tree is drawn, not only
  one beside the document
 
 \includegraphics{example-image-a.png} with mwe's picture in the TeX tree

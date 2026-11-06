@@ -1,7 +1,7 @@
 From 0d440a0c4219b1444c6acfe3e5c645192cd2c962 Mon Sep 17 00:00:00 2001
 From: stefanoconiglio <33290924+stefanoconiglio@users.noreply.github.com>
 Date: Tue, 3 Nov 2026 22:35:04 +0100
-Subject: [PATCH 16/19] Typeset Texinfo files with plain XeTeX's format
+Subject: [PATCH 16/20] Typeset Texinfo files with plain XeTeX's format
 
 texinfo.tex is built on plain TeX: loaded on top of XeLaTeX's format it
 stops at once, so a .texi manual never showed. The engine now picks the
