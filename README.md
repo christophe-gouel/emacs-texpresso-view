@@ -166,18 +166,21 @@ Everything is done with the mouse:
   a double click opens.
 - **Appearing on a click**: Arrange ▾ → Appear puts an object in at a later click of the presentation (Beamer
   makes a page for each step: `tv appear=2`, and the layer's `\begin{tvlayer}[2]`).
-- **Animations**: Arrange ▾ → Animation makes it come in fading, flying in from a side, wiping, dissolving or
-  zooming (`tv effect=fade`; one that came with the slide comes at the next click). It is the transition of its
-  step's page, a line of the frame such as `\transfade<2>% tv step`: the rest of the page staying the same, only
-  the object moves. Viewers that play PDF transitions show it: Evince and pdfpc do, zathura does not.
 - **The deck**: the toolbar's slide menu (▾ at its right end) also gives the slide a transition (fade, dissolve,
   wipe, push, cover, split, box, glitter: Beamer's `\trans…`, played by viewers that know PDF transitions), a
   background of its own (a colour from the palette, or a picture stretched over it: `\tvbackground{red!20}`, the
   other slides keeping the theme's), the deck a theme, colours and a slide size (16:9, 16:10, 4:3, 3:2, 5:4, 14:9,
   A4: Beamer's `aspectratio`), skips the slide (`\begin{frame}<0>`: it stays in the source and the strip, marked
-  "skipped", and makes no page), and presents the deck from this slide (also `F5`): its files saved, the PDF made
-  with `latexmk` and shown full screen by pdfpc where it is installed, else Evince (which plays transitions and
-  animations), else zathura (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
+  "skipped", and makes no page), and presents the deck from this slide (below).
+- **Presenting** (`F5`, or the slide menu's "Present from this slide"; `M-x texpresso-view-slideshow`): the slide
+  alone, full screen, black around it, in a frame of its own that opens where Emacs is (move it to the projector as
+  any window); in a terminal, the view's frame until the end. Each click of the slide is a step, as Beamer makes
+  them (`\pause`, `\uncover<2->`, Appear). Keys, a clicker's among them: → ↓ Space PageDown a step forward
+  (a mouse click too), ← ↑ PageUp a step back, `b` or `.` a black screen and back, a slide's number and RET goes to
+  it, Esc or `q` ends. The source stays in your frame: what you fix there shows on the slide at once. After typing
+  there, click the slide to give it the keys back. "Present as a PDF, in a viewer" makes the PDF with `latexmk`
+  and shows it full screen in pdfpc where it is installed, else Evince, else zathura
+  (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
 - **Speaker notes**: the slide menu's Speaker notes opens a window under the slide; what you type there goes into
   the slide's `\note{…}` at once (Beamer leaves notes out of the slides). "Present with speaker notes" makes a
   second PDF beside the deck, `NAME-notes.pdf`, each page the slide and its notes side by side, and shows it in
@@ -207,6 +210,7 @@ The keys, for those who want them:
 | `]`, `[`                     | bring it forward, send it back                                           |
 | `Esc`                        | unselect                                                                 |
 | `s`                          | open or close the slide strip                                            |
+| `F5`                         | present from this slide, full screen in Emacs (Esc ends)                 |
 
 What goes on a slide is plain TikZ. Each object is a node in the frame's `tvlayer`, centred at `(x,y)` from the
 slide's top left corner, in hundredths of the slide's width (`\tvu`), whatever its aspect ratio; `rotate` turns

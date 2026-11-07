@@ -73,13 +73,14 @@
 ;; and makes them appear at a later click; a dragged object snaps to
 ;; guides; over a handle the pointer shows which way it drags.  Text gets
 ;; a font, underline, strikethrough, lists and line spacing; objects a flip
-;; and a drop shadow; sixteen shapes come from the Shape menu.  Objects
-;; come in with an animation; a slide gets a background of its own and
+;; and a drop shadow; sixteen shapes come from the Shape menu.  A slide
+;; gets a background of its own and
 ;; speaker notes, typed in a window under it; its own title and text are
 ;; typed where they are, and the text dragged becomes a box.  A picture
 ;; is cropped by its handles (a double click), all of it shown faded, and
 ;; tables come from the Shape menu.  The slide menu gives a slide a transition, the deck a theme,
-;; skips a slide, and presents the deck (F5).  s opens the slide strip on the left
+;; skips a slide, and presents the deck (F5): in Emacs, full screen, the
+;; steps a click each, edits to the source shown at once.  s opens the slide strip on the left
 ;; (`texpresso-view-slides'): every frame with a small picture of its page
 ;; and its title, to show, move (M-up, M-down or a drag), copy, delete and
 ;; add from a layout (`texpresso-view-layouts').
@@ -234,9 +235,21 @@ Nil asks the terminal; set it if the terminal does not answer.")
 (defvar texpresso-view--sixel-held nil
   "The terminal told to hold its screen until the picture is drawn, or nil.")
 
+(defvar texpresso-view--presenting nil
+  "The presentation under way in Emacs: (WINDOW FRAME RESTORE), or nil.
+WINDOW shows the slide; FRAME is the frame made for it, nil in a text
+terminal, where the view's own frame is taken; RESTORE, a function, puts
+back what the presentation covered.")
+
+(defvar texpresso-view--blank nil
+  "Non-nil while a presentation shows a black screen.")
+
 (defun texpresso-view--window ()
-  "The window showing the page, if any."
-  (get-buffer-window texpresso-view-buffer-name t))
+  "The window showing the page, if any: the presentation's while it lasts."
+  (let ((win (car texpresso-view--presenting)))
+    (if (window-live-p win)
+        win
+      (get-buffer-window texpresso-view-buffer-name t))))
 
 (defun texpresso-view--tty-p (&optional win)
   "Non-nil if WIN, by default the page's window, is in a text terminal.
@@ -327,7 +340,8 @@ SOURCE and LINE: where the page starts in the source, if TeXpresso knows."
       (texpresso-view--draw-page)))))
 
 (defun texpresso-view--draw-page ()
-  "Show the page on display in its window, the object selected outlined."
+  "Show the page on display in its window, the object selected outlined.
+While presenting, the page alone, or nothing while the screen is black."
   (let ((buf (get-buffer texpresso-view-buffer-name)))
     (when (and buf texpresso-view--png)
       (pcase-let ((`(,data ,width ,height) texpresso-view--png))
@@ -335,19 +349,23 @@ SOURCE and LINE: where the page starts in the source, if TeXpresso knows."
           (let ((inhibit-read-only t))
             (when texpresso-view--image
               (image-flush texpresso-view--image t))
-            (setq texpresso-view--image (texpresso-view--page-image data width height))
+            (setq texpresso-view--image
+                  (if texpresso-view--presenting
+                      (create-image data 'png t :scale 1.0 :width width :height height)
+                    (texpresso-view--page-image data width height)))
             (erase-buffer)
             ;; Centre the page in its window: TeXpresso fits it to the window,
             ;; so one side is filled and the other has room to share out.
             (let* ((win (texpresso-view--window))
                    (left (if win (max 0 (/ (- (window-body-width win t) width) 2)) 0))
                    (top (if win (max 0 (/ (- (window-body-height win t) height) 2)) 0)))
-              (when (> top (frame-char-height))
+              (when (> top (frame-char-height (and win (window-frame win))))
                 (insert (propertize " " 'display `(space :width (1) :height (,top)))
                         "\n"))
               (when (> left 0)
                 (insert (propertize " " 'display `(space :width (,left))))))
-            (insert-image texpresso-view--image)
+            (unless texpresso-view--blank
+              (insert-image texpresso-view--image))
             (goto-char (point-min))))))))
 
 (defun texpresso-view--mode-line ()
@@ -1205,7 +1223,8 @@ A touchpad sends many wheel events for one stroke."
     texpresso-view-mouse-down texpresso-view-down texpresso-view-right
     texpresso-view-up texpresso-view-left texpresso-view-backspace
     texpresso-view-toolbar-click texpresso-view-context-menu texpresso-view-paste
-    texpresso-view-mouse-down-add)
+    texpresso-view-mouse-down-add texpresso-view-slideshow-black texpresso-view-slideshow-digit
+    texpresso-view-slideshow-return texpresso-view-slideshow-end)
   "Commands of the page's window: after them the page does not follow the cursor.
 The wheel on the page leaves the source window selected; a click selects
 the page's window.")
@@ -4764,7 +4783,6 @@ The first and the last stay; the gaps between them become equal."
          ,(item "Bring to front" #'texpresso-view-bring-to-front)
          ,(item "Send to back" #'texpresso-view-send-to-back))
         ("Appear" ,@(texpresso-view--appear-items))
-        ("Animation" ,@(texpresso-view--effect-items))
         ("Rotate"
          ,(item "A quarter to the left" #'texpresso-view-rotate-left)
          ,(item "A quarter to the right" #'texpresso-view-rotate-right)
@@ -4882,6 +4900,182 @@ pdfpc, the notes to the speaker alone."
                              `((?f . ,(shell-quote-argument pdf)) (?p . ,page)))))
            (message "The PDF could not be made: see the buffer %s" (buffer-name log))))))))
 
+;;; Presenting in Emacs (F5): the slide alone, full screen, black around
+;;; it, in a frame of its own (in a text terminal, the view's frame,
+;;; taken whole until the end), its steps one page after another as
+;;; Beamer makes them.  The source stays where it was, so a fix typed
+;;; there shows on the slide at once.  The keys are a clicker's too:
+;;; PageDown and PageUp, B or . for a black screen, Esc to end.
+
+(defconst texpresso-view-slideshow-buffer-name "*TeXpresso presenting*"
+  "The buffer shown where the page was, while the slide is in its own frame.")
+
+(defvar texpresso-view--slideshow-number ""
+  "The digits typed while presenting: the slide to go to on RET.")
+
+(defvar texpresso-view-slideshow-mode-map (make-sparse-keymap)
+  "Keys of a presentation in Emacs.")
+
+(defun texpresso-view--define-slideshow-keys (map)
+  "Give MAP the keys of a presentation, a clicker's among them."
+  (dolist (key '("<right>" "<down>" "SPC" "<next>" "n" "<mouse-1>"))
+    (define-key map (kbd key) #'texpresso-view-next))
+  (dolist (key '("<left>" "<up>" "<prior>" "p" "DEL" "<backspace>" "<mouse-3>"))
+    (define-key map (kbd key) #'texpresso-view-previous))
+  (define-key map [down-mouse-1] #'ignore)
+  (define-key map [drag-mouse-1] #'ignore)
+  (define-key map [down-mouse-3] #'ignore)
+  (define-key map (kbd "b") #'texpresso-view-slideshow-black)
+  (define-key map (kbd ".") #'texpresso-view-slideshow-black)
+  (dotimes (d 10)
+    (define-key map (kbd (number-to-string d)) #'texpresso-view-slideshow-digit))
+  (define-key map (kbd "RET") #'texpresso-view-slideshow-return)
+  (define-key map (kbd "<escape>") #'texpresso-view-slideshow-end)
+  (define-key map (kbd "q") #'texpresso-view-slideshow-end)
+  ;; a clicker's present button sends F5 and Esc in turn
+  (define-key map (kbd "<f5>") #'ignore)
+  map)
+
+(texpresso-view--define-slideshow-keys texpresso-view-slideshow-mode-map)
+
+(define-minor-mode texpresso-view-slideshow-mode
+  "The keys of a presentation in Emacs, in the page's buffer while it lasts.
+\\{texpresso-view-slideshow-mode-map}"
+  :lighter nil
+  :keymap texpresso-view-slideshow-mode-map)
+
+(defun texpresso-view-slideshow ()
+  "Present the deck in Emacs, full screen, from the slide on display.
+In a graphical frame the slide goes to a frame of its own, full screen
+where it opens (move it to the projector as any window); in a text
+terminal it takes the view's frame until the end.  The arrows, Space,
+PageDown and PageUp (a clicker's) go a step forward or back; B or . makes
+the screen black and back; a slide's number and RET goes to it; Esc or
+q ends.  The source stays where it was: what is typed there shows on the
+slide at once."
+  (interactive)
+  (let ((page (get-buffer texpresso-view-buffer-name))
+        (win (texpresso-view--window)))
+    (unless (and page win (process-live-p texpresso--process))
+      (user-error "No TeXpresso view open"))
+    (when texpresso-view--presenting
+      (user-error "Already presenting: Esc there ends it"))
+    (setq texpresso-view--selected nil
+          texpresso-view--also nil
+          texpresso-view--cropping nil
+          texpresso-view--blank nil
+          texpresso-view--slideshow-number "")
+    (if (display-graphic-p (window-frame win))
+        (let* ((frame (with-selected-window win
+                        (make-frame `((name . "TeXpresso presenting") (fullscreen . fullboth)
+                                      ;; its messages go to the speaker's frame
+                                      (minibuffer . ,(minibuffer-window (window-frame win)))
+                                      (background-color . "black") (menu-bar-lines . 0)
+                                      (tool-bar-lines . 0) (tab-bar-lines . 0)
+                                      (vertical-scroll-bars . nil) (horizontal-scroll-bars . nil)
+                                      (left-fringe . 0) (right-fringe . 0)
+                                      (internal-border-width . 0) (unsplittable . t)))))
+               (shown (frame-root-window frame))
+               (holder (get-buffer-create texpresso-view-slideshow-buffer-name)))
+          (with-current-buffer holder
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert "\n  The slide is in its own frame, full screen.\n"
+                      "  Esc or q there ends the presentation.\n"))
+            (special-mode)
+            (setq-local cursor-type nil))
+          (set-window-dedicated-p win nil)
+          (set-window-buffer win holder)
+          (set-window-dedicated-p win t)
+          (set-window-buffer shown page)
+          (set-window-dedicated-p shown t)
+          (setq texpresso-view--presenting
+                (list shown frame (lambda ()
+                                    (when (window-live-p win)
+                                      (set-window-dedicated-p win nil)
+                                      (set-window-buffer win page)
+                                      (set-window-dedicated-p win t)))))
+          (select-frame-set-input-focus frame))
+      (let ((config (current-window-configuration (window-frame win)))
+            (ignore-window-parameters t))
+        (select-window win)
+        (delete-other-windows win)
+        (setq texpresso-view--presenting
+              (list win nil (lambda () (set-window-configuration config))))))
+    (dolist (p '(mode-line-format header-line-format tab-line-format))
+      (set-window-parameter (car texpresso-view--presenting) p 'none))
+    (add-hook 'delete-frame-functions #'texpresso-view--slideshow-frame-deleted)
+    (with-current-buffer page
+      (texpresso-view-slideshow-mode 1))
+    (texpresso-view--send-size)
+    (texpresso-view--draw-page)
+    (message "Presenting: PageDown and PageUp go a step, B makes the screen black, Esc ends")))
+
+(defun texpresso-view-slideshow-end ()
+  "End the presentation in Emacs: the slide goes back beside the source."
+  (interactive)
+  (pcase-let ((`(,win ,frame ,restore) texpresso-view--presenting))
+    (setq texpresso-view--presenting nil
+          texpresso-view--blank nil)
+    (remove-hook 'delete-frame-functions #'texpresso-view--slideshow-frame-deleted)
+    (let ((page (get-buffer texpresso-view-buffer-name)))
+      (when page
+        (with-current-buffer page
+          (texpresso-view-slideshow-mode -1))))
+    (when (window-live-p win)
+      (dolist (p '(mode-line-format header-line-format tab-line-format))
+        (set-window-parameter win p nil)))
+    (when restore
+      (funcall restore))
+    (when (frame-live-p frame)
+      (delete-frame frame))
+    (when (get-buffer texpresso-view-slideshow-buffer-name)
+      (kill-buffer texpresso-view-slideshow-buffer-name))
+    ;; the page's window is the speaker's again: its size, once Emacs has
+    ;; redrawn what changed
+    (run-at-time 0 nil (lambda ()
+                         (texpresso-view--send-size)
+                         (texpresso-view--draw-page)
+                         (texpresso-view--strip-schedule)))))
+
+(defun texpresso-view--slideshow-frame-deleted (frame)
+  "End the presentation when its FRAME is closed."
+  (when (and frame (eq frame (nth 1 texpresso-view--presenting)))
+    (setf (nth 1 texpresso-view--presenting) nil)
+    (texpresso-view-slideshow-end)))
+
+(defun texpresso-view-slideshow-black ()
+  "Make the screen black during a presentation, or show the slide again."
+  (interactive)
+  (setq texpresso-view--blank (not texpresso-view--blank))
+  (texpresso-view--draw-page))
+
+(defun texpresso-view-slideshow-digit ()
+  "Add the digit typed to the number of the slide to go to."
+  (interactive)
+  (setq texpresso-view--slideshow-number
+        (concat texpresso-view--slideshow-number (string last-command-event)))
+  (message "Slide %s: RET goes there" texpresso-view--slideshow-number))
+
+(defun texpresso-view-slideshow-return ()
+  "Go to the slide whose number was typed; with none, a step forward.
+Slides are counted as the strip shows them: the frames not skipped
+(a frame a macro makes is not counted)."
+  (interactive)
+  (let ((n (string-to-number texpresso-view--slideshow-number)))
+    (setq texpresso-view--slideshow-number "")
+    (if (< n 1)
+        (texpresso-view-next)
+      (let* ((all (texpresso-view--deck-frames))
+             (frames (seq-remove (lambda (f) (texpresso-view--frame-skipped-p (nth 0 f) (nth 1 f)))
+                                 all)))
+        (if (> n (length frames))
+            (message "The deck has %d slides" (length frames))
+          (texpresso-view--goto-frame (nth (1- n) frames)))
+        (dolist (f all)
+          (when (markerp (nth 1 f))
+            (set-marker (nth 1 f) nil)))))))
+
 (defun texpresso-view--frame-skipped-p (buf pos)
   "Non-nil if the frame at POS of BUF is skipped: \\begin{frame}<0>."
   (with-current-buffer buf
@@ -4932,7 +5126,8 @@ It is a line right after the frame's first."
     (with-current-buffer buf
       (save-excursion
         (goto-char beg)
-        ;; the slide's own: a step's has <N> after it (an object's effect)
+        ;; the slide's own: a step's has <N> after it (an object's effect,
+        ;; which earlier versions wrote)
         (if (re-search-forward "^[ \t]*\\\\trans[a-z]+\\(?:\\[[^]\n]*\\]\\)?[ \t]*\n" end t)
             (replace-match (if command (concat "  " command "\n") "") t t)
           (when command
@@ -5186,82 +5381,6 @@ Nothing changes while they are the same slide's."
           (texpresso-view--notes-refresh)
           (select-window notes))))))
 
-;;; Animations: an object appearing at a later step comes in with an
-;;; effect, the transition of its step's page (\transfade<3>, a line of
-;;; the frame marked "% tv step"): the rest of the page being the same,
-;;; only the object fades or flies in.  Viewers that play PDF transitions
-;;; show it (Evince, pdfpc).
-
-(defconst texpresso-view-effects
-  '(("Appear" . nil) ("Fade in" . "fade") ("Fly in from the left" . "fly-left")
-    ("Fly in from the right" . "fly-right") ("Fly in from the top" . "fly-top")
-    ("Fly in from the bottom" . "fly-bottom") ("Wipe in" . "wipe") ("Dissolve in" . "dissolve")
-    ("Zoom in" . "zoom"))
-  "The ways an object comes in at its step: (NAME . TV-EFFECT).")
-
-(defun texpresso-view--effect-command (effect step)
-  "Beamer's transition for EFFECT at STEP, as a line of the frame, or nil."
-  (let ((tr (pcase effect
-              ("fade" "\\transfade<%d>")
-              ("fly-left" "\\transcover<%d>[direction=0]")
-              ("fly-right" "\\transcover<%d>[direction=180]")
-              ("fly-top" "\\transcover<%d>[direction=270]")
-              ("fly-bottom" "\\transcover<%d>[direction=90]")
-              ("wipe" "\\transwipe<%d>[direction=0]")
-              ("dissolve" "\\transdissolve<%d>")
-              ("zoom" "\\transboxout<%d>"))))
-    (and tr (concat (format tr step) "% tv step"))))
-
-(defun texpresso-view--update-effects ()
-  "Write the transitions of the steps of the slide on display, from its effects."
-  (pcase-let ((`(,buf ,beg ,_) (texpresso-view--frame)))
-    (when buf
-      (let (lines)
-        (dolist (s (texpresso-view--frame-statements))
-          (let ((step (texpresso-view--option s "tv appear"))
-                (effect (texpresso-view--option s "tv effect")))
-            (when (and (stringp step) (stringp effect))
-              (let ((line (texpresso-view--effect-command effect (string-to-number step))))
-                (when line
-                  (setf (alist-get (string-to-number step) lines) line))))))
-        (with-current-buffer buf
-          (save-excursion
-            (let ((end (save-excursion (goto-char beg)
-                                       (re-search-forward "^[ \t]*\\\\end{frame}" nil t))))
-              (goto-char beg)
-              (while (re-search-forward "^[ \t]*\\\\trans[a-z]+<[0-9]+>[^\n]*% tv step\n" end t)
-                (setq end (- end (- (match-end 0) (match-beginning 0))))
-                (replace-match "" t t)))
-            (goto-char beg)
-            (forward-line 1)
-            (dolist (l (sort lines (lambda (a b) (< (car a) (car b)))))
-              (insert "  " (cdr l) "\n"))))))))
-
-(defun texpresso-view-set-effect (effect)
-  "Make the objects selected come in with EFFECT, a `tv effect'; nil: appear.
-One that comes with the slide is made to come at the next click."
-  (let* ((statements (texpresso-view--frame-statements))
-         (last (apply #'max 1 (mapcar (lambda (s)
-                                        (let ((v (texpresso-view--option s "tv appear")))
-                                          (if (stringp v) (string-to-number v) 1)))
-                                      statements))))
-    (texpresso-view--format
-     (lambda (statement _kind)
-       (texpresso-view--put-option statement "tv effect" effect)
-       (when (and effect (not (stringp (texpresso-view--option statement "tv appear"))))
-         (texpresso-view--put-option statement "tv appear" (number-to-string (1+ last))))))
-    (texpresso-view--update-steps)
-    (texpresso-view--update-effects)))
-
-(defun texpresso-view--effect-items ()
-  "The menu items that give the objects selected their effect."
-  (let* ((statement (and texpresso-view--selected (texpresso-view--selected-statement)))
-         (now (and statement (texpresso-view--option statement "tv effect"))))
-    (mapcar (lambda (e)
-              (vector (car e) (lambda () (interactive) (texpresso-view-set-effect (cdr e)))
-                      :style 'radio :selected (equal now (cdr e)) :active 'texpresso-view--selected))
-            texpresso-view-effects)))
-
 ;;; More of Google Slides: selecting every object, replacing a picture,
 ;;; the slide's size.
 
@@ -5335,7 +5454,8 @@ RATIO is as \"169\".  What is placed with the mouse keeps its share of the width
     ["Speaker notes" texpresso-view-notes t]
     ["Skip this slide" texpresso-view-skip-slide t]
     "---"
-    ["Present from this slide" texpresso-view-present t]
+    ["Present from this slide" texpresso-view-slideshow t]
+    ["Present as a PDF, in a viewer" texpresso-view-present t]
     ["Present with speaker notes" texpresso-view-present-with-notes (executable-find "pdfpc")]))
 
 (defun texpresso-view-slides-context-menu (event)
@@ -5807,8 +5927,13 @@ layout (`texpresso-view-layouts'), q closes the strip."
 
 (defun texpresso-view--show-frame (i)
   "Show the strip's frame I: its page, and its source in the source window."
-  (pcase-let ((`(,buf ,beg . ,_) (nth i texpresso-view--strip-frames)))
-    (when (and buf (marker-buffer beg))
+  (texpresso-view--goto-frame (nth i texpresso-view--strip-frames)))
+
+(defun texpresso-view--goto-frame (frame)
+  "Show FRAME, (BUFFER BEG …): its page, and its source in the source window.
+BEG is a position or a marker."
+  (pcase-let ((`(,buf ,beg . ,_) frame))
+    (when (and (buffer-live-p buf) (or (not (markerp beg)) (marker-buffer beg)))
       (let ((line (with-current-buffer buf
                     (save-excursion
                       (goto-char beg)
@@ -6071,7 +6196,7 @@ the map a running Emacs already has."
   (define-key map [mouse-3] #'ignore)
   ;; shift and a click adds to the objects selected; on a slide a drag on an
   ;; empty spot frames objects, so Meta and a drag copies the page's text there
-  (define-key map (kbd "<f5>") #'texpresso-view-present)
+  (define-key map (kbd "<f5>") #'texpresso-view-slideshow)
   (define-key map [S-down-mouse-1] #'texpresso-view-mouse-down-add)
   (define-key map [S-mouse-1] #'ignore)
   (define-key map [S-drag-mouse-1] #'ignore)
@@ -6287,6 +6412,8 @@ lock, auto-save and backup files are left out."
 
 (defun texpresso-view--stop ()
   "Close the page's window and stop TeXpresso."
+  (when texpresso-view--presenting
+    (texpresso-view-slideshow-end))
   (let ((win (texpresso-view--window)))
     (when (and win (terminal-parameter (frame-terminal (window-frame win))
                                        'texpresso-view-cell-asked))
