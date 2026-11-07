@@ -366,7 +366,9 @@ While presenting, the page alone, or nothing while the screen is black."
                 (insert (propertize " " 'display `(space :width (,left))))))
             (unless texpresso-view--blank
               (insert-image texpresso-view--image))
-            (goto-char (point-min))))))))
+            (goto-char (point-min))))
+        (when texpresso-view--presenting
+          (texpresso-view--presenter-draw))))))
 
 (defun texpresso-view--mode-line ()
   "Show the page and the error count in the page window's mode line."
@@ -4913,6 +4915,15 @@ pdfpc, the notes to the speaker alone."
 (defvar texpresso-view--slideshow-number ""
   "The digits typed while presenting: the slide to go to on RET.")
 
+(defvar texpresso-view--slideshow-start nil
+  "When the presentation started, as `float-time'.")
+
+(defvar texpresso-view--clock-timer nil
+  "The timer that moves the presenter's clock on each second.")
+
+(defvar texpresso-view--presenter-where ""
+  "Where the presentation is, for the presenter's header: slide and page.")
+
 (defvar texpresso-view-slideshow-mode-map (make-sparse-keymap)
   "Keys of a presentation in Emacs.")
 
@@ -4978,12 +4989,7 @@ slide at once."
                (shown (frame-root-window frame))
                (holder (get-buffer-create texpresso-view-slideshow-buffer-name)))
           (with-current-buffer holder
-            (let ((inhibit-read-only t))
-              (erase-buffer)
-              (insert "\n  The slide is in its own frame, full screen.\n"
-                      "  Esc or q there ends the presentation.\n"))
-            (special-mode)
-            (setq-local cursor-type nil))
+            (texpresso-view-presenter-mode))
           (set-window-dedicated-p win nil)
           (set-window-buffer win holder)
           (set-window-dedicated-p win t)
@@ -5007,8 +5013,11 @@ slide at once."
     (add-hook 'delete-frame-functions #'texpresso-view--slideshow-frame-deleted)
     (with-current-buffer page
       (texpresso-view-slideshow-mode 1))
+    (setq texpresso-view--slideshow-start (float-time)
+          texpresso-view--clock-timer (run-with-timer 1 1 #'texpresso-view--presenter-tick))
     (texpresso-view--send-size)
     (texpresso-view--draw-page)
+    (texpresso-view--thumbs-schedule 0)
     (message "Presenting: PageDown and PageUp go a step, B makes the screen black, Esc ends")))
 
 (defun texpresso-view-slideshow-end ()
@@ -5017,6 +5026,9 @@ slide at once."
   (pcase-let ((`(,win ,frame ,restore) texpresso-view--presenting))
     (setq texpresso-view--presenting nil
           texpresso-view--blank nil)
+    (when (timerp texpresso-view--clock-timer)
+      (cancel-timer texpresso-view--clock-timer))
+    (setq texpresso-view--clock-timer nil)
     (remove-hook 'delete-frame-functions #'texpresso-view--slideshow-frame-deleted)
     (let ((page (get-buffer texpresso-view-buffer-name)))
       (when page
@@ -5031,6 +5043,9 @@ slide at once."
       (delete-frame frame))
     (when (get-buffer texpresso-view-slideshow-buffer-name)
       (kill-buffer texpresso-view-slideshow-buffer-name))
+    ;; the pages' pictures were the presenter's view's alone: TeX back to the page
+    (unless (texpresso-view--strip-window)
+      (texpresso-view--thumbs-stop))
     ;; the page's window is the speaker's again: its size, once Emacs has
     ;; redrawn what changed
     (run-at-time 0 nil (lambda ()
@@ -5075,6 +5090,108 @@ Slides are counted as the strip shows them: the frames not skipped
         (dolist (f all)
           (when (markerp (nth 1 f))
             (set-marker (nth 1 f) nil)))))))
+
+;;; The presenter's view: while the slide is in its own frame, the window
+;;; where the page was shows the speaker the slide on display, the next
+;;; page (the next click), the slide's notes, and a clock.
+
+(define-derived-mode texpresso-view-presenter-mode special-mode "Presenter"
+  "The presenter's view: the slide on display, the next one, the notes, a clock."
+  (setq-local cursor-type nil)
+  (setq-local word-wrap t)
+  (setq-local fringe-indicator-alist '((continuation nil nil)))
+  (setq-local line-prefix " ")
+  (setq-local wrap-prefix " ")
+  (setq-local header-line-format '(:eval (texpresso-view--presenter-header))))
+
+(defun texpresso-view--presenter-window ()
+  "The window of the presenter's view, if a presentation shows one."
+  (let ((buf (get-buffer texpresso-view-slideshow-buffer-name)))
+    (and buf texpresso-view--presenting (get-buffer-window buf t))))
+
+(defun texpresso-view--presenter-widths (win)
+  "The widths of the slide on display and of the next one in WIN: (NOW . NEXT)."
+  (let ((w (- (window-body-width win t) (* 4 (frame-char-width (window-frame win))))))
+    (cons (max 120 (round (* 0.58 w))) (max 80 (min 900 (round (* 0.38 w)))))))
+
+(defun texpresso-view--presenter-header ()
+  "The presenter's header: where the presentation is, the time taken, the hour."
+  (let* ((secs (if texpresso-view--slideshow-start
+                   (floor (- (float-time) texpresso-view--slideshow-start))
+                 0))
+         (clock (format "%d:%02d:%02d" (/ secs 3600) (% (/ secs 60) 60) (% secs 60))))
+    (concat " " texpresso-view--presenter-where
+            (propertize " " 'display '(space :align-to (- right 22)))
+            (propertize clock 'face 'bold) "   " (format-time-string "%H:%M"))))
+
+(defun texpresso-view--presenter-tick ()
+  "Move the presenter's clock on."
+  (let ((win (texpresso-view--presenter-window)))
+    (when win
+      (with-current-buffer (window-buffer win)
+        (force-mode-line-update)))))
+
+(defun texpresso-view--presenter-place ()
+  "Where the presentation is: \"Slide N of M · page P of C\", or the page alone."
+  (let* ((page (get-buffer texpresso-view-buffer-name))
+         (pages (and page (buffer-local-value 'texpresso-view--page-text page)))
+         (start (texpresso-view--frame-marker))
+         (all (texpresso-view--deck-frames))
+         (frames (seq-remove (lambda (f) (texpresso-view--frame-skipped-p (nth 0 f) (nth 1 f))) all))
+         (i (and start (texpresso-view--frame-index frames (marker-buffer start) (marker-position start)))))
+    (prog1 (concat (if i (format "Slide %d of %d" (1+ i) (length frames)) "")
+                   (and i pages " · ")
+                   (and pages (apply #'format "page %s of %s" (split-string pages "/" t " "))))
+      (dolist (f all)
+        (when (markerp (nth 1 f))
+          (set-marker (nth 1 f) nil))))))
+
+(defun texpresso-view--presenter-notes ()
+  "The notes of the slide on display, its first \\note{…}, or nil."
+  (let* ((start (texpresso-view--frame-marker))
+         (frame (and start (texpresso-view--frame-at start)))
+         (region (and frame (apply #'texpresso-view--note-region frame))))
+    (and region
+         (string-trim (with-current-buffer (car frame)
+                        (buffer-substring-no-properties (car region) (cdr region)))))))
+
+(defun texpresso-view--presenter-draw ()
+  "Draw the presenter's view: the slide on display, the next page, the notes."
+  (let ((win (texpresso-view--presenter-window)))
+    (when win
+      (pcase-let* ((`(,now-w . ,next-w) (texpresso-view--presenter-widths win))
+                   (next (and texpresso-view--page
+                              (seq-find (lambda (th) (eql (nth 1 th) (1+ texpresso-view--page)))
+                                        texpresso-view--thumbs)))
+                   (notes (texpresso-view--presenter-notes)))
+        (setq texpresso-view--presenter-where (texpresso-view--presenter-place))
+        (with-current-buffer (window-buffer win)
+          (let ((inhibit-read-only t)
+                (gap (propertize " " 'display '(space :width (20)))))
+            (erase-buffer)
+            (insert "\n" (propertize "Now" 'face 'shadow)
+                    (propertize " " 'display `(space :align-to (,(+ now-w 40))))
+                    (propertize "Next" 'face 'shadow) "\n")
+            (cond
+             (texpresso-view--blank
+              (insert (propertize "(the screen is black: b shows the slide)" 'face 'shadow)))
+             (texpresso-view--png
+              (pcase-let ((`(,data ,w ,h) texpresso-view--png))
+                (insert-image (texpresso-view--bordered-image data w h now-w)))))
+            (insert gap)
+            (cond
+             (next
+              (insert-image (texpresso-view--slide-picture (list (nth 0 next) (nth 2 next) (nth 3 next))
+                                                           next-w)))
+             ((and texpresso-view--thumbs texpresso-view--page
+                   (not (seq-find (lambda (th) (> (nth 1 th) texpresso-view--page)) texpresso-view--thumbs)))
+              (insert (propertize "The end of the deck" 'face 'shadow)))
+             (t (insert (propertize "…" 'face 'shadow))))
+            (insert "\n\n" (propertize "Notes" 'face 'shadow) "\n\n")
+            (let ((from (point)))
+              (insert (or notes (propertize "(none: the slide menu's Speaker notes adds them)" 'face 'shadow)))
+              (add-face-text-property from (point) '(:height 1.4)))
+            (goto-char (point-min))))))))
 
 (defun texpresso-view--frame-skipped-p (buf pos)
   "Non-nil if the frame at POS of BUF is skipped: \\begin{frame}<0>."
@@ -5760,15 +5877,23 @@ A frame with overlays has a page for each: the last one, the frame whole."
                   (aset pictures i (list file w h)))))))))
     pictures))
 
-(defun texpresso-view--slide-picture (picture)
-  "The strip's image of PICTURE, (FILE WIDTH HEIGHT), in a thin grey border."
-  (pcase-let* ((`(,file ,w ,h) picture)
-               (data (with-temp-buffer
-                       (set-buffer-multibyte nil)
-                       (insert-file-contents-literally file)
-                       (buffer-string))))
+(defun texpresso-view--slide-picture (picture &optional max)
+  "The strip's image of PICTURE, (FILE WIDTH HEIGHT), in a thin grey border.
+One wider than MAX pixels is drawn MAX wide (the presenter's view asks
+for larger pictures than the strip's)."
+  (pcase-let ((`(,file ,w ,h) picture))
+    (texpresso-view--bordered-image (with-temp-buffer
+                                      (set-buffer-multibyte nil)
+                                      (insert-file-contents-literally file)
+                                      (buffer-string))
+                                    w h max)))
+
+(defun texpresso-view--bordered-image (data w0 h0 &optional max)
+  "An image of the PNG DATA, W0 x H0, in a thin grey border, at most MAX wide."
+  (let* ((w (if (and max (> w0 max)) max w0))
+         (h (if (and max (> w0 max)) (round (* h0 (/ (float max) w0))) h0)))
     (if (not (image-type-available-p 'svg))
-        (create-image data 'png t :scale 1.0 :margin 2 :width w :height h)
+        (create-image data 'png t :scale (/ (float w) w0) :margin 2)
       (let ((svg (svg-create (+ w 2) (+ h 2))))
         (svg-embed svg data "image/png" t :x 1 :y 1 :width w :height h)
         (svg-rectangle svg 0.5 0.5 (+ w 1) (+ h 1) :fill "none" :stroke "#9aa0a6" :stroke-width 1)
@@ -5806,7 +5931,8 @@ A frame with overlays has a page for each: the last one, the frame whole."
                 (insert (propertize (format "%3d " (1+ n)) 'face 'shadow))
                 (if (and images picture)
                     (progn
-                      (insert-image (texpresso-view--slide-picture picture))
+                      (insert-image (texpresso-view--slide-picture
+                                     picture (and win (texpresso-view--strip-picture-width win))))
                       (insert "\n    "))
                   (unless images (insert " ")))
                 (insert (let ((title (nth 3 frame)))
@@ -5836,25 +5962,37 @@ A frame with overlays has a page for each: the last one, the frame whole."
   (when (and (texpresso-view--strip-window) (not (timerp texpresso-view--strip-timer)))
     (setq texpresso-view--strip-timer (run-with-timer 0.3 nil #'texpresso-view--strip-draw))))
 
+(defun texpresso-view--strip-picture-width (win)
+  "The width of the strip's pictures in its window WIN, in pixels."
+  (max 60 (min 260 (- (window-body-width win t) (* 6 (frame-char-width (window-frame win)))))))
+
+(defun texpresso-view--thumbs-width ()
+  "The width every page's picture is wanted at, or nil when none is wanted.
+The strip's, or the next slide's in the presenter's view, the larger."
+  (let* ((strip (texpresso-view--strip-window))
+         (presenter (texpresso-view--presenter-window))
+         (widths (delq nil (list (and strip (display-images-p (window-frame strip))
+                                      (texpresso-view--strip-picture-width strip))
+                                 (and presenter (cdr (texpresso-view--presenter-widths presenter)))))))
+    (and widths (apply #'max widths))))
+
 (defun texpresso-view--thumbs-request ()
-  "Ask TeXpresso for the strip's pictures, every page's, at the strip's width."
+  "Ask TeXpresso for the strip's pictures, every page's, at the strip's width.
+While presenting, at the width of the next slide's picture too."
   (setq texpresso-view--thumbs-timer nil)
-  (let ((win (texpresso-view--strip-window)))
-    (when (and win (process-live-p texpresso--process)
-               (display-images-p (window-frame win))
+  (let ((width (texpresso-view--thumbs-width)))
+    (when (and width (process-live-p texpresso--process)
                (not (and texpresso-view--thumbs-pending
                          (< (- (float-time) texpresso-view--thumbs-pending) 10))))
       (unless (and texpresso-view--thumbs-dir (file-directory-p texpresso-view--thumbs-dir))
         (setq texpresso-view--thumbs-dir (make-temp-file "texpresso-view-slides" t)))
-      (let ((width (max 60 (min 260 (- (window-body-width win t)
-                                       (* 6 (frame-char-width (window-frame win))))))))
-        (setq texpresso-view--thumbs-new nil
-              texpresso-view--thumbs-pending (float-time))
-        (texpresso--send 'thumbnails texpresso-view--thumbs-dir width width)))))
+      (setq texpresso-view--thumbs-new nil
+            texpresso-view--thumbs-pending (float-time))
+      (texpresso--send 'thumbnails texpresso-view--thumbs-dir width width))))
 
 (defun texpresso-view--thumbs-schedule (&optional delay)
   "Ask for the strip's pictures again after DELAY seconds (1) of quiet."
-  (when (texpresso-view--strip-window)
+  (when (or (texpresso-view--strip-window) (texpresso-view--presenter-window))
     (when (timerp texpresso-view--thumbs-timer)
       (cancel-timer texpresso-view--thumbs-timer))
     (setq texpresso-view--thumbs-timer
@@ -5867,6 +6005,7 @@ If TeX is not FINISHED, ask again."
         texpresso-view--thumbs-new nil
         texpresso-view--thumbs-pending nil)
   (texpresso-view--strip-draw)
+  (texpresso-view--presenter-draw)
   (unless finished
     (texpresso-view--thumbs-schedule 1.0)))
 

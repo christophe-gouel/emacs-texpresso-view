@@ -177,8 +177,10 @@ Everything is done with the mouse:
   any window); in a terminal, the view's frame until the end. Each click of the slide is a step, as Beamer makes
   them (`\pause`, `\uncover<2->`, Appear). Keys, a clicker's among them: → ↓ Space PageDown a step forward
   (a mouse click too), ← ↑ PageUp a step back, `b` or `.` a black screen and back, a slide's number and RET goes to
-  it, Esc or `q` ends. The source stays in your frame: what you fix there shows on the slide at once. After typing
-  there, click the slide to give it the keys back. "Present as a PDF, in a viewer" makes the PDF with `latexmk`
+  it, Esc or `q` ends. Your own frame, where the page was, becomes the presenter's view: where you are (slide 3 of
+  12, page 7 of 30), the time since you started and the hour, the slide on display, the next click's page, and the
+  slide's speaker notes in large type. The source stays in your frame: what you fix there shows on the slide at
+  once. After typing there, click the slide to give it the keys back. "Present as a PDF, in a viewer" makes the PDF with `latexmk`
   and shows it full screen in pdfpc where it is installed, else Evince, else zathura
   (`texpresso-view-present-command`, `texpresso-view-present-viewer`).
 - **Speaker notes**: the slide menu's Speaker notes opens a window under the slide; what you type there goes into
